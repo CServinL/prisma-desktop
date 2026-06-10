@@ -1,0 +1,24 @@
+[project]
+name = "prisma-desktop-sidecar"
+version = "0.1.0"
+description = "Python sidecar for prisma-desktop Tauri app"
+requires-python = ">=3.12"
+
+# Runtime: prisma Python backend, spawned as a sidecar process by Tauri.
+# Install from local source during development:
+#   pip install -e ../../prisma
+dependencies = [
+    "prisma",
+]
+
+[project.optional-dependencies]
+# Dev tooling only — never shipped in the sidecar binary.
+# Install from local source:
+#   pip install -e '../../sysatlas[reflect-rust]'
+dev = [
+    "sysatlas[reflect-rust]",
+    "pytest",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
