@@ -4,11 +4,13 @@ version = "0.1.0"
 description = "Python sidecar for prisma-desktop Tauri app"
 requires-python = ">=3.12"
 
-# Runtime: prisma Python backend, spawned as a sidecar process by Tauri.
+# Runtime: prisma Python backend (includes docu-craft as a dep).
 # Install from local source during development:
 #   pip install -e ../../prisma
+#   pip install -e ../../docu-craft
 dependencies = [
     "prisma",
+    "docu-craft",
 ]
 
 [project.optional-dependencies]

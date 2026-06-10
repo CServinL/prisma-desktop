@@ -1,156 +1,157 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  const API = "http://127.0.0.1:8765";
 
-  let name = $state("");
-  let greetMsg = $state("");
+  type Status = "idle" | "pending" | "running" | "done" | "error" | "offline";
 
-  async function greet(event: Event) {
-    event.preventDefault();
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    greetMsg = await invoke("greet", { name });
+  let topic = $state("");
+  let status = $state<Status>("idle");
+  let contentHtml = $state("");
+  let errorMsg = $state("");
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+  async function checkServer(): Promise<boolean> {
+    try {
+      const r = await fetch(`${API}/health`, { signal: AbortSignal.timeout(2000) });
+      return r.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  async function startReview() {
+    const up = await checkServer();
+    if (!up) { status = "offline"; return; }
+
+    status = "pending";
+    contentHtml = "";
+    errorMsg = "";
+
+    const res = await fetch(`${API}/review`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ topic }),
+    });
+    if (!res.ok) { status = "error"; errorMsg = await res.text(); return; }
+
+    const { job_id } = await res.json();
+    pollTimer = setInterval(() => poll(job_id), 2000);
+  }
+
+  async function poll(jobId: string) {
+    try {
+      const res = await fetch(`${API}/review/${jobId}`);
+      const job = await res.json();
+
+      if (job.status === "done") {
+        clearInterval(pollTimer!);
+        status = "done";
+        contentHtml = job.content_html;
+      } else if (job.status === "error") {
+        clearInterval(pollTimer!);
+        status = "error";
+        errorMsg = job.errors?.join(", ") ?? "unknown error";
+      } else {
+        status = job.status;
+      }
+    } catch {
+      clearInterval(pollTimer!);
+      status = "error";
+      errorMsg = "lost connection to server";
+    }
   }
 </script>
 
-<main class="container">
-  <h1>Welcome to Tauri + Svelte</h1>
+<main>
+  {#if status === "offline"}
+    <div class="banner error">
+      Prisma server is not running. Start it with: <code>prisma serve</code>
+    </div>
+  {/if}
 
-  <div class="row">
-    <a href="https://vite.dev" target="_blank">
-      <img src="/vite.svg" class="logo vite" alt="Vite Logo" />
-    </a>
-    <a href="https://tauri.app" target="_blank">
-      <img src="/tauri.svg" class="logo tauri" alt="Tauri Logo" />
-    </a>
-    <a href="https://svelte.dev" target="_blank">
-      <img src="/svelte.svg" class="logo svelte-kit" alt="SvelteKit Logo" />
-    </a>
+  <div class="input-row">
+    <input
+      bind:value={topic}
+      placeholder="Research topic…"
+      disabled={status === "pending" || status === "running"}
+    />
+    <button
+      onclick={startReview}
+      disabled={!topic.trim() || status === "pending" || status === "running"}
+    >
+      {status === "pending" || status === "running" ? "Running…" : "Review"}
+    </button>
   </div>
-  <p>Click on the Tauri, Vite, and SvelteKit logos to learn more.</p>
 
-  <form class="row" onsubmit={greet}>
-    <input id="greet-input" placeholder="Enter a name..." bind:value={name} />
-    <button type="submit">Greet</button>
-  </form>
-  <p>{greetMsg}</p>
+  {#if status === "error"}
+    <div class="banner error">{errorMsg}</div>
+  {/if}
+
+  {#if status === "done" && contentHtml}
+    <div class="report">
+      {@html contentHtml}
+    </div>
+  {/if}
 </main>
 
 <style>
-.logo.vite:hover {
-  filter: drop-shadow(0 0 2em #747bff);
-}
-
-.logo.svelte-kit:hover {
-  filter: drop-shadow(0 0 2em #ff3e00);
-}
-
-:root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 400;
-
-  color: #0f0f0f;
-  background-color: #f6f6f6;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  -webkit-text-size-adjust: 100%;
-}
-
-.container {
-  margin: 0;
-  padding-top: 10vh;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  text-align: center;
-}
-
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: 0.75s;
-}
-
-.logo.tauri:hover {
-  filter: drop-shadow(0 0 2em #24c8db);
-}
-
-.row {
-  display: flex;
-  justify-content: center;
-}
-
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-
-a:hover {
-  color: #535bf2;
-}
-
-h1 {
-  text-align: center;
-}
-
-input,
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  color: #0f0f0f;
-  background-color: #ffffff;
-  transition: border-color 0.25s;
-  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2);
-}
-
-button {
-  cursor: pointer;
-}
-
-button:hover {
-  border-color: #396cd8;
-}
-button:active {
-  border-color: #396cd8;
-  background-color: #e8e8e8;
-}
-
-input,
-button {
-  outline: none;
-}
-
-#greet-input {
-  margin-right: 5px;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #2f2f2f;
+  main {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    font-family: Inter, sans-serif;
   }
 
-  a:hover {
-    color: #24c8db;
+  .input-row {
+    display: flex;
+    gap: 8px;
+    padding: 12px 16px;
+    border-bottom: 1px solid #e0e0e0;
   }
 
-  input,
+  input {
+    flex: 1;
+    padding: 8px 12px;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    font-size: 14px;
+  }
+
   button {
-    color: #ffffff;
-    background-color: #0f0f0f98;
+    padding: 8px 20px;
+    border: none;
+    border-radius: 6px;
+    background: #3b82f6;
+    color: white;
+    font-size: 14px;
+    cursor: pointer;
   }
-  button:active {
-    background-color: #0f0f0f69;
-  }
-}
 
+  button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .banner {
+    padding: 10px 16px;
+    font-size: 13px;
+  }
+
+  .banner.error {
+    background: #fef2f2;
+    color: #b91c1c;
+    border-bottom: 1px solid #fca5a5;
+  }
+
+  .report {
+    flex: 1;
+    overflow-y: auto;
+    padding: 24px;
+  }
+
+  code {
+    font-family: monospace;
+    background: #f3f4f6;
+    padding: 1px 4px;
+    border-radius: 3px;
+  }
 </style>
