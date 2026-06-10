@@ -102,7 +102,7 @@
         <p>Enter a research topic above to generate a literature review.</p>
       </div>
     {:else if status === "done" && contentHtml}
-      <iframe srcdoc={contentHtml} title="Literature review: {currentTopic}" sandbox="allow-same-origin"></iframe>
+      <iframe srcdoc={contentHtml} title="Literature review: {currentTopic}" sandbox=""></iframe>
     {/if}
   </div>
 </div>
