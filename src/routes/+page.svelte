@@ -1,5 +1,6 @@
 <script lang="ts">
-  const API = "http://127.0.0.1:8765";
+  const DEFAULT_API = "http://127.0.0.1:8765";
+  let apiBase = $state(localStorage.getItem("prisma.server") ?? DEFAULT_API);
 
   type Status = "idle" | "pending" | "running" | "done" | "error" | "offline";
 
@@ -12,7 +13,7 @@
 
   async function checkServer(): Promise<boolean> {
     try {
-      const r = await fetch(`${API}/health`, { signal: AbortSignal.timeout(2000) });
+      const r = await fetch(`${apiBase}/health`, { signal: AbortSignal.timeout(2000) });
       return r.ok;
     } catch {
       return false;
@@ -28,7 +29,7 @@
     errorMsg = "";
     currentTopic = topic;
 
-    const res = await fetch(`${API}/review`, {
+    const res = await fetch(`${apiBase}/review`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ topic }),
@@ -41,7 +42,7 @@
 
   async function poll(jobId: string) {
     try {
-      const res = await fetch(`${API}/review/${jobId}`);
+      const res = await fetch(`${apiBase}/review/${jobId}`);
       const job = await res.json();
       if (job.status === "done") {
         clearInterval(pollTimer!);
@@ -62,12 +63,26 @@
   }
 
   const busy = $derived(status === "pending" || status === "running");
+
+  function saveServer() {
+    const url = apiBase.trim().replace(/\/$/, "");
+    apiBase = url;
+    localStorage.setItem("prisma.server", url);
+  }
 </script>
 
 <div class="shell">
   <!-- toolbar -->
   <div class="toolbar">
     <span class="logo">Prisma</span>
+    <input
+      class="server-url"
+      bind:value={apiBase}
+      placeholder="http://127.0.0.1:8765"
+      onblur={saveServer}
+      onkeydown={(e) => e.key === "Enter" && saveServer()}
+      title="Prisma server URL"
+    />
     <div class="search-row">
       <input
         bind:value={topic}
@@ -141,6 +156,27 @@
     letter-spacing: 0.05em;
     white-space: nowrap;
   }
+
+  .server-url {
+    width: 220px;
+    padding: 5px 10px;
+    background: #080c16;
+    border: 1px solid #1a2d4a;
+    border-radius: 5px;
+    color: #4a6a8a;
+    font-size: 11px;
+    font-family: "JetBrains Mono", "Fira Code", "Courier New", monospace;
+    outline: none;
+    transition: border-color 0.15s, color 0.15s;
+    flex-shrink: 0;
+  }
+
+  .server-url:focus {
+    border-color: #2a5aaa;
+    color: #a8c8ff;
+  }
+
+  .server-url::placeholder { color: #2a3a50; }
 
   .search-row {
     display: flex;
