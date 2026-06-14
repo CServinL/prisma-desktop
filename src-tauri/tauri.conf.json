@@ -12,13 +12,17 @@
   "app": {
     "windows": [
       {
-        "title": "prisma-desktop",
-        "width": 800,
-        "height": 600
+        "title": "Prisma",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 500,
+        "decorations": false,
+        "transparent": true
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src http: https:; img-src 'self' data:; frame-src 'none'"
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost http: https:; img-src 'self' data: http://127.0.0.1:8765; frame-src http://127.0.0.1:8765"
     }
   },
   "bundle": {

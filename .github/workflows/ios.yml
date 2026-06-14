@@ -1,0 +1,37 @@
+name: iOS Release
+
+# PREREQUISITE: run `tauri ios init` locally on a Mac with Xcode installed,
+# commit the generated src-tauri/gen/apple/ directory, then push a tag.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Install npm deps
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Build iOS (release)
+        run: cargo tauri ios build --export-method app-store-connect
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}

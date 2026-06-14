@@ -1,0 +1,57 @@
+name: Android Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag (e.g. v0.1.0)
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK
+        run: sdkmanager "ndk;26.3.11579264"
+
+      - name: Install npm deps
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Build Android APK
+        env:
+          NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/26.3.11579264
+        run: npm run tauri -- android build
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: prisma-desktop-android-${{ inputs.tag }}
+          path: src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk

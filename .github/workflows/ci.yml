@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check-desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runs-on: ubuntu-22.04
+            rust-target: x86_64-unknown-linux-gnu
+          - runs-on: windows-latest
+            rust-target: x86_64-pc-windows-msvc
+
+    runs-on: ${{ matrix.runs-on }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Linux system deps
+        if: matrix.runs-on == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Install npm deps
+        run: npm ci
+
+      - name: Svelte check
+        run: npm run check
+
+      - name: Cargo check
+        working-directory: src-tauri
+        run: cargo check --target ${{ matrix.rust-target }}
+
+  check-android:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK
+        run: sdkmanager "ndk;26.3.11579264"
+
+      - name: Install npm deps
+        run: npm ci
+
+      - name: Cargo check (Android)
+        working-directory: src-tauri
+        env:
+          NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/26.3.11579264
+        run: cargo check --target aarch64-linux-android
