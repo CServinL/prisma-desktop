@@ -7,6 +7,7 @@
     config: { ok: boolean; error: string | null };
     pending_jobs: number;
     graphify: { state: GState; last_indexed: string | null; last_error?: string | null };
+    chroma?: { chunks: number; files_indexed: number; model: string } | null;
     vault?: { root: string; notes: number; sources: number; chats: number; streams: number };
     zotero?: { mode: string; available: boolean } | null;
   }
@@ -742,6 +743,16 @@
             </div>
             {#if serverStatus.graphify?.last_error}
               <div class="sp-error">{serverStatus.graphify.last_error}</div>
+            {/if}
+
+            {#if serverStatus.chroma}
+              <div class="sp-section">
+                <span class="sp-label">Chroma</span>
+                <span class="sp-val" class:ok={serverStatus.chroma.chunks > 0} class:warn={serverStatus.chroma.chunks === 0}>
+                  {serverStatus.chroma.chunks} chunks · {serverStatus.chroma.files_indexed} files
+                </span>
+              </div>
+              <div class="sp-vault-root">{serverStatus.chroma.model}</div>
             {/if}
 
             {#if serverStatus.zotero}
