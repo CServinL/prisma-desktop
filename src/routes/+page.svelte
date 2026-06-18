@@ -153,8 +153,8 @@
   function toggleSection(key: string) {
     const opening = !sectionOpen[key];
     sectionOpen = { ...sectionOpen, [key]: opening };
-    if (key === "zotero" && opening && zoteroStatus?.available && zoteroCollections.length === 0) {
-      loadZoteroCollections().then(loadZoteroItems);
+    if (key === "zotero" && opening && zoteroStatus?.available) {
+      loadZoteroCollections().then(() => loadZoteroItems());
     }
   }
 
@@ -322,13 +322,19 @@
   async function loadZoteroCollections() {
     try {
       const r = await fetch(`${apiBase}/zotero/collections`);
-      if (r.ok) zoteroCollections = await r.json();
+      if (r.ok) {
+        zoteroCollections = await r.json();
+        if (zoteroCollection && !zoteroCollections.find(c => c.key === zoteroCollection)) {
+          zoteroCollection = null;
+        }
+      }
     } catch {}
   }
 
-  async function loadZoteroItems() {
+  async function loadZoteroItems(collection?: string | null) {
     const params = new URLSearchParams();
-    if (zoteroCollection) params.set("collection", zoteroCollection);
+    const coll = collection !== undefined ? collection : zoteroCollection;
+    if (coll) params.set("collection", coll);
     if (zoteroQ.trim()) params.set("q", zoteroQ.trim());
     try {
       const r = await fetch(`${apiBase}/zotero/items?${params}`);
@@ -800,9 +806,9 @@
       {:else if searchQuery.trim() && searchResults.length > 0}
         <div class="section-header">Results</div>
         {#each searchResults as r}
-          <button class="node-item" class:active={activeNode?.slug === r.slug} onclick={() => openNode(r.slug)}>
-            <span class="node-title">{r.title}</span>
-            <span class="node-excerpt">{r.excerpt}</span>
+          <button class="result-item" class:active={activeNode?.slug === r.slug} onclick={() => openNode(r.slug)}>
+            <span class="result-title">{r.title}</span>
+            {#if r.excerpt}<span class="result-excerpt">{r.excerpt}</span>{/if}
           </button>
         {/each}
       {:else if searchQuery.trim() && !searching}
@@ -955,13 +961,13 @@
                   <button
                     class="zotero-coll-btn"
                     class:active={zoteroCollection === null}
-                    onclick={() => { zoteroCollection = null; loadZoteroItems(); }}
+                    onclick={() => { zoteroCollection = null; loadZoteroItems(null); }}
                   >All</button>
                   {#each zoteroCollections as c}
                     <button
                       class="zotero-coll-btn"
                       class:active={zoteroCollection === c.key}
-                      onclick={() => { zoteroCollection = c.key; loadZoteroItems(); }}
+                      onclick={() => { zoteroCollection = c.key; loadZoteroItems(c.key); }}
                     >{c.name}</button>
                   {/each}
                 </div>
@@ -1430,7 +1436,7 @@
 
   .search-input {
     width: 100%;
-    padding: 5px 48px 5px 10px;
+    padding: 5px 52px 5px 10px;
     background: #0d1320;
     border: 1px solid #1a2d4a;
     border-radius: 5px;
@@ -1444,7 +1450,7 @@
 
   .clear-btn {
     position: absolute;
-    right: 26px;
+    right: 48px;
     background: none;
     border: none;
     color: #4a6a8a;
@@ -1823,6 +1829,40 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .result-item {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    width: 100%;
+    padding: 5px 10px;
+    background: none;
+    border: none;
+    border-left: 2px solid transparent;
+    cursor: pointer;
+    text-align: left;
+    gap: 2px;
+  }
+  .result-item:hover { background: #0d1828; }
+  .result-item.active { background: #0d1828; border-left-color: #4a9eff; }
+
+  .result-title {
+    font-size: 11px;
+    color: #c8ddf0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    width: 100%;
+  }
+
+  .result-excerpt {
+    font-size: 10px;
+    color: #3d5470;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    width: 100%;
   }
 
   .sidebar-empty {
