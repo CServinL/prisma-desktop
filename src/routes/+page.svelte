@@ -52,6 +52,7 @@
     last_updated?: string;
     next_update?: string;
     query?: string;
+    collection_key?: string;
   }
 
   interface SearchResult {
@@ -149,6 +150,7 @@
   let zoteroQ = $state("");
   let zoteroSearchTimer: ReturnType<typeof setTimeout> | null = null;
   let importingKey = $state<string | null>(null);
+  let zoteroLoading = $state(false);
 
   function toggleSection(key: string) {
     const opening = !sectionOpen[key];
@@ -320,6 +322,7 @@
   }
 
   async function loadZoteroCollections() {
+    zoteroLoading = true;
     try {
       const r = await fetch(`${apiBase}/zotero/collections`);
       if (r.ok) {
@@ -328,10 +331,11 @@
           zoteroCollection = null;
         }
       }
-    } catch {}
+    } catch {} finally { zoteroLoading = false; }
   }
 
   async function loadZoteroItems(collection?: string | null) {
+    zoteroLoading = true;
     const params = new URLSearchParams();
     const coll = collection !== undefined ? collection : zoteroCollection;
     if (coll) params.set("collection", coll);
@@ -339,7 +343,7 @@
     try {
       const r = await fetch(`${apiBase}/zotero/items?${params}`);
       if (r.ok) zoteroItems = await r.json();
-    } catch {}
+    } catch {} finally { zoteroLoading = false; }
   }
 
   function onZoteroSearch() {
@@ -386,6 +390,8 @@
       graphifyLastIndexed = s.graphify?.last_indexed ?? null;
       if (!wasOnline) {
         await Promise.all([loadTree(), loadHome(), loadStreams(), loadChats(), loadZoteroStatus()]);
+      } else {
+        await loadTree();
       }
     } catch { serverOnline = false; serverStatus = null; }
   }
@@ -411,6 +417,32 @@
       const url = f === "md" ? `${apiBase}/notes/${slug}?format=md` : `${apiBase}/notes/${slug}`;
       const r = await fetch(url);
       if (r.ok) activeNode = await r.json();
+    } catch {} finally { loadingNode = false; }
+  }
+
+  async function openStream(slug: string) {
+    loadingNode = true;
+    try {
+      const r = await fetch(`${apiBase}/streams/${slug}/view`);
+      if (r.ok) {
+        activeNode = await r.json();
+        if (activeNode?.collection_key) {
+          zoteroCollection = activeNode.collection_key;
+          if (zoteroStatus?.available) {
+            zoteroLoading = true;
+            try {
+              if (zoteroCollections.length === 0) {
+                const rc = await fetch(`${apiBase}/zotero/collections`);
+                if (rc.ok) zoteroCollections = await rc.json();
+              }
+              const params = new URLSearchParams({ collection: activeNode.collection_key });
+              const ri = await fetch(`${apiBase}/zotero/items?${params}`);
+              if (ri.ok) zoteroItems = await ri.json();
+            } finally { zoteroLoading = false; }
+            sectionOpen = { ...sectionOpen, zotero: true };
+          }
+        }
+      }
     } catch {} finally { loadingNode = false; }
   }
 
@@ -900,7 +932,7 @@
                 <button
                   class="tree-file"
                   class:active={activeNode?.slug === s.slug}
-                  onclick={() => openNode(s.slug)}
+                  onclick={() => openStream(s.slug)}
                 >
                   <span class="tree-type-dot nt-stream sdot-{s.status}"></span>
                   <span class="tree-file-name">{s.title}</span>
@@ -949,7 +981,13 @@
           </button>
         </div>
         {#if sectionOpen.zotero}
-          <div class="section-body section-body-scroll">
+          <div class="section-body section-body-scroll zotero-panel">
+            {#if zoteroLoading}
+              <div class="zotero-busy">
+                <div class="zotero-busy-spinner"></div>
+                <span class="zotero-busy-label">Loading…</span>
+              </div>
+            {/if}
             {#if !zoteroStatus?.available}
               <div class="sidebar-empty">
                 Zotero not available.<br/>
@@ -1664,6 +1702,37 @@
     max-height: 40vh;
     overflow-y: auto;
     flex-shrink: 1;
+  }
+
+  .zotero-panel {
+    position: relative;
+  }
+
+  .zotero-busy {
+    position: absolute;
+    inset: 0;
+    z-index: 10;
+    background: rgba(8, 12, 22, 0.75);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    pointer-events: all;
+  }
+
+  .zotero-busy-spinner {
+    width: 18px; height: 18px;
+    border: 2px solid #1a3a6a;
+    border-top-color: #4a9eff;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+  }
+
+  .zotero-busy-label {
+    font-size: 10px;
+    color: #4a6a8a;
+    letter-spacing: 0.06em;
   }
 
   .zotero-mode-badge {
