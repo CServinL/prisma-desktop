@@ -43,7 +43,7 @@ Then restart `prisma serve` — it mounts `ui/build/` at `/app` automatically.
 Regenerate all diagrams:
 
 ```bash
-for f in docs/diagrams/*.py; do .venv/bin/python "$f"; done
+bash docs/diagrams/gen.sh
 ```
 
 Diagrams live in `docs/diagrams/`. Include updated HTML files in the PR — reviewing them is part of the PR checklist:
