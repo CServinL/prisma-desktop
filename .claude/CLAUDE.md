@@ -1,35 +1,39 @@
 # prisma-desktop
 
-Tauri v2 + SvelteKit desktop UI for the Prisma research assistant.
+Thin Tauri v2 shell for Prisma on Linux and Windows/WSL2.
+
+The UI source lives in the sibling `prisma/ui/` directory.
 The Python backend lives in the sibling `prisma/` repo (`prisma serve`).
 
-## Before writing code
+Tauri is the "PWA runtime" for Linux/WSL2 — platforms that don't support native PWA install.
+It opens a native window pointed at `http://127.0.0.1:8765/app` (served by `prisma serve`).
+On Android, iOS, and macOS the same URL is used directly in the browser as a PWA.
 
-Read the domain ontology first — it is the shared contract for both repos:
+## What lives here
 
-```
-../prisma/docs/ontologia.md          ← entity map, mechanics, axioms
-../prisma/docs/concepts/<entity>.md  ← one file per concept
-```
-
-Key invariant: Zotero is the bookmark layer (stream runs write here).
-The vault is the second brain (deliberate import only, via POST /zotero/import/{key}).
-Do not auto-populate the vault from any automated pipeline.
-
-## Architecture
-
-- No sidecar, no Rust proxy. User runs `prisma serve`; Svelte calls the HTTP API directly.
-- Server URL is user-configurable in the toolbar, persisted in `localStorage`.
-- All domain entities (Source, Note, Stream, ZoteroItem, …) are defined in the ontology above.
+- `src-tauri/` — Rust code: window management, settings persistence, WSL2-aware URL opener
+- `src-tauri/tauri.conf.json` — window config, CSP, icons
+- No SvelteKit source — that is in `prisma/ui/`
 
 ## Running locally
 
 ```bash
-# terminal 1 — backend
-cd ../prisma && .venv/bin/prisma serve
+# terminal 1 — backend + UI
+cd ../prisma
+.venv/bin/prisma serve        # serves API on :8765 and UI at :8765/app
 
-# terminal 2 — desktop
-PATH="$HOME/.cargo/bin:$PATH" PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig npm run tauri dev
+# terminal 2 — Tauri shell
+PATH="$HOME/.cargo/bin:$PATH" npm run tauri dev
 ```
 
-WSLg must be enabled (`DISPLAY=:0`). First Rust compile takes ~10 min.
+The Tauri shell loads `http://127.0.0.1:8765/app` — no Vite dev server needed.
+
+## Building the UI
+
+```bash
+cd ../prisma/ui
+npm install
+npm run build      # output → prisma/ui/build/
+```
+
+Then restart `prisma serve` — it mounts `ui/build/` at `/app` automatically.
