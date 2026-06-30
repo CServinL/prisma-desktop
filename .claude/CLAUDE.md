@@ -48,10 +48,12 @@ bash docs/diagrams/gen.sh
 
 Diagrams live in `docs/diagrams/`. Include updated HTML files in the PR — reviewing them is part of the PR checklist:
 
-| File | Type | What it shows |
-|------|------|---------------|
-| `01_system_topology.html` | SystemMap | Clients, Tauri shell internals, server, UI pipeline |
-| `02_deployment.html` | SystemMap | Physical processes: WSL2, Windows host, internet |
-| `03a_open_stream.html` | SequenceMap | User opens a research stream in the UI |
-| `03b_vault_search.html` | SequenceMap | Fast + deep vault search flows |
-| `03c_dev_hot_reload.html` | SequenceMap | Dev workflow: edit → auto-rebuild → browser reload |
+| File | Views | What it shows |
+|------|-------|---------------|
+| `01_system_topology.html` | System topology, UI pipeline | Clients, Tauri internals, server, UI build pipeline |
+| `02_deployment.html` | Deployment, Network | Physical processes (WSL2/Windows) + port/protocol map |
+| `03a_open_stream.html` | — | User opens a research stream (sequence) |
+| `03b_vault_search.html` | — | Fast + deep vault search flows (sequence) |
+| `03c_dev_hot_reload.html` | — | Edit → rebuild → browser reload (sequence) |
+
+Note: `SequenceMap` uses a separate renderer from `SystemMap` and cannot be combined into a multi-view file. The three sequence diagrams remain separate files — tracked as a sysatlas 0.4.0 improvement.

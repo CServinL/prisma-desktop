@@ -2,8 +2,12 @@
 
 Run: .venv/bin/python docs/diagrams/03_ui_interaction_flow.py
 
-Covers the main UI flows: opening a stream, searching the vault,
-and hot-reload during development.
+Produces three separate HTML files — one per flow — because SequenceMap
+does not support save_collection (SystemMap-only limitation in sysatlas).
+
+  03a_open_stream.html  — user opens a research stream
+  03b_vault_search.html — fast + deep vault search
+  03c_dev_hot_reload.html — dev edit → auto-rebuild → browser reload
 """
 from pathlib import Path
 from sysatlas import SequenceMap
