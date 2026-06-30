@@ -10,6 +10,7 @@
     chroma?: { chunks: number; files_indexed: number; model: string } | null;
     vault?: { root: string; notes: number; sources: number; chats: number; streams: number };
     zotero?: { mode: string; available: boolean } | null;
+    ollama?: { reachable: boolean } | null;
   }
 
   interface NodeMeta {
@@ -755,6 +756,15 @@
                 {serverStatus.online ? "reachable" : "offline"}
               </span>
             </div>
+
+            {#if serverStatus.ollama != null}
+              <div class="sp-section">
+                <span class="sp-label">Ollama</span>
+                <span class="sp-val" class:ok={serverStatus.ollama.reachable} class:bad={!serverStatus.ollama.reachable}>
+                  {serverStatus.ollama.reachable ? "reachable" : "offline"}
+                </span>
+              </div>
+            {/if}
 
             {#if serverStatus.vault}
               <div class="sp-section">
