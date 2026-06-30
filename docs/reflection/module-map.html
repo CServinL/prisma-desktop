@@ -2,39 +2,12 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>prisma-desktop — Rust crate</title>
+<title>prisma-desktop — system architecture</title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; background: #f1f5f9; font-family: sans-serif; }
 
-  body { display: flex; height: 100%; }
-  #sidebar {
-    width: 200px; min-width: 200px;
-    background: #1e293b;
-    display: flex; flex-direction: column;
-    padding: 16px 0;
-  }
-  #sidebar h2 {
-    color: #94a3b8; font-size: 11px; font-weight: 600;
-    letter-spacing: 0.08em; text-transform: uppercase;
-    padding: 0 16px 12px;
-  }
-  #sidebar button {
-    background: none; border: none; cursor: pointer;
-    text-align: left; padding: 8px 16px;
-    color: #cbd5e1; font-size: 13px; font-family: sans-serif;
-    border-left: 3px solid transparent;
-    transition: background 0.1s;
-  }
-  #sidebar button:hover { background: #334155; }
-  #sidebar button.active {
-    color: #f8fafc; border-left-color: #3b82f6;
-    background: #334155;
-  }
-  #main {
-    flex: 1; display: flex; align-items: center; justify-content: center;
-    background: #f1f5f9;
-  }
+  body { display: flex; align-items: center; justify-content: center; }
   #diagram {
     border: 1px solid #cbd5e1;
     box-shadow: 0 4px 16px rgba(0,0,0,0.12);
@@ -46,29 +19,40 @@ html, body { height: 100%; background: #f1f5f9; font-family: sans-serif; }
 </style>
 </head>
 <body>
-
-<div id="sidebar">
-  <h2>prisma-desktop — Rust crate</h2>
-  <button id="btn-0" onclick="loadDiagram(0)">root-view</button>
-</div>
-<div id="main">
-  <div id="diagram"></div>
-</div>
-
+<div id="diagram"></div>
 <script src="https://viewer.diagrams.net/js/viewer-static.min.js"></script>
 <script>
-var diagrams = {"root-view": "<mxGraphModel dx=\"1422\" dy=\"762\" grid=\"1\" gridSize=\"10\" guides=\"1\" tooltips=\"1\" connect=\"1\" arrows=\"1\" fold=\"1\" page=\"1\" pageScale=\"1\" pageWidth=\"1169\" pageHeight=\"827\" math=\"0\" shadow=\"0\"><root><mxCell id=\"0\" /><mxCell id=\"1\" parent=\"0\" /><mxCell id=\"trace-layer\" parent=\"0\" value=\"Traces\" visible=\"0\" /><mxCell id=\"legend-layer\" parent=\"0\" value=\"Legend\" visible=\"0\" /><mxCell id=\"2\" value=\"crate\" style=\"rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#f8fafc;strokeColor=#374151;fontFamily=monospace;fontSize=11;\" vertex=\"1\" parent=\"1\"><mxGeometry x=\"520\" y=\"80\" width=\"160\" height=\"60\" as=\"geometry\" /></mxCell></root></mxGraphModel>"};
-var names = ["root-view"];
+function fitGraph(viewer, container) {
+  if (!viewer || !viewer.graph) return;
+  var graph = viewer.graph;
+  graph.view.setScale(1);
+  graph.view.setTranslate(0, 0);
+  var bounds = graph.getGraphBounds();
+  if (!bounds || bounds.width <= 0 || bounds.height <= 0) return;
+  var pad = 30;
+  var availW = container.clientWidth - pad * 2;
+  var availH = container.clientHeight - pad * 2;
+  var scale = Math.min(availW / bounds.width, availH / bounds.height);
+  if (scale > 4) scale = 4;
+  if (scale < 0.1) scale = 0.1;
+  graph.view.setScale(scale);
+  var b2 = graph.getGraphBounds();
+  var tx = (container.clientWidth - b2.width) / 2 - b2.x;
+  var ty = (container.clientHeight - b2.height) / 2 - b2.y;
+  graph.view.setTranslate(tx / scale, ty / scale);
+}
+
+var xmlStr = "<mxGraphModel dx=\"1422\" dy=\"762\" grid=\"1\" gridSize=\"10\" guides=\"1\" tooltips=\"1\" connect=\"1\" arrows=\"1\" fold=\"1\" page=\"1\" pageScale=\"1\" pageWidth=\"1169\" pageHeight=\"827\" math=\"0\" shadow=\"0\"><root><mxCell id=\"0\" /><mxCell id=\"1\" parent=\"0\" /><mxCell id=\"trace-layer\" parent=\"0\" value=\"Traces\" visible=\"0\" /><mxCell id=\"legend-layer\" parent=\"0\" value=\"Legend\" visible=\"0\" /><mxCell id=\"2\" value=\"Tauri Shell\" style=\"rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#f8fafc;strokeColor=#374151;fontFamily=monospace;fontSize=11;\" vertex=\"1\" parent=\"1\"><mxGeometry x=\"1895\" y=\"95\" width=\"160\" height=\"60\" as=\"geometry\" /></mxCell><mxCell id=\"3\" value=\"PWA (Android)\" style=\"rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#f8fafc;strokeColor=#374151;fontFamily=monospace;fontSize=11;\" vertex=\"1\" parent=\"1\"><mxGeometry x=\"1636\" y=\"267\" width=\"160\" height=\"60\" as=\"geometry\" /></mxCell><mxCell id=\"4\" value=\"PWA (iOS/Mac)\" style=\"rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#f8fafc;strokeColor=#374151;fontFamily=monospace;fontSize=11;\" vertex=\"1\" parent=\"1\"><mxGeometry x=\"2135\" y=\"267\" width=\"160\" height=\"60\" as=\"geometry\" /></mxCell><mxCell id=\"5\" value=\"prisma serve\" style=\"rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#f8fafc;strokeColor=#374151;fontFamily=monospace;fontSize=11;\" vertex=\"1\" parent=\"1\"><mxGeometry x=\"2009\" y=\"409\" width=\"160\" height=\"80\" as=\"geometry\" /></mxCell><mxCell id=\"6\" value=\"UI /app\" style=\"rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#f8fafc;strokeColor=#374151;fontFamily=monospace;fontSize=11;\" vertex=\"1\" parent=\"1\"><mxGeometry x=\"1769\" y=\"439\" width=\"160\" height=\"60\" as=\"geometry\" /></mxCell><mxCell id=\"7\" value=\"REST API\" style=\"rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#f8fafc;strokeColor=#374151;fontFamily=monospace;fontSize=11;\" vertex=\"1\" parent=\"1\"><mxGeometry x=\"2249\" y=\"424\" width=\"160\" height=\"60\" as=\"geometry\" /></mxCell><mxCell id=\"8\" value=\"UI Watcher\" style=\"rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#f8fafc;strokeColor=#374151;fontFamily=monospace;fontSize=11;\" vertex=\"1\" parent=\"1\"><mxGeometry x=\"1529\" y=\"439\" width=\"160\" height=\"60\" as=\"geometry\" /></mxCell><mxCell id=\"9\" value=\"SvelteKit UI\" style=\"rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#f8fafc;strokeColor=#374151;fontFamily=monospace;fontSize=11;\" vertex=\"1\" parent=\"1\"><mxGeometry x=\"1889\" y=\"569\" width=\"160\" height=\"60\" as=\"geometry\" /></mxCell><mxCell id=\"10\" value=\"Window mgmt\" style=\"rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#f8fafc;strokeColor=#374151;fontFamily=monospace;fontSize=11;\" vertex=\"1\" parent=\"1\"><mxGeometry x=\"1649\" y=\"729\" width=\"160\" height=\"60\" as=\"geometry\" /></mxCell><mxCell id=\"11\" value=\"Settings\" style=\"rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#f8fafc;strokeColor=#374151;fontFamily=monospace;fontSize=11;\" vertex=\"1\" parent=\"1\"><mxGeometry x=\"1889\" y=\"729\" width=\"160\" height=\"60\" as=\"geometry\" /></mxCell><mxCell id=\"12\" value=\"URL opener\" style=\"rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#f8fafc;strokeColor=#374151;fontFamily=monospace;fontSize=11;\" vertex=\"1\" parent=\"1\"><mxGeometry x=\"2129\" y=\"729\" width=\"160\" height=\"60\" as=\"geometry\" /></mxCell><mxCell id=\"13\" value=\"\" style=\"rounded=1;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.3333;entryY=0.0;entryDx=0;entryDy=0;strokeColor=#6b7280;strokeWidth=1.5;fontSize=10;\" edge=\"1\" source=\"2\" target=\"5\" parent=\"1\"><mxGeometry relative=\"1\" as=\"geometry\"><Array as=\"points\"><mxPoint x=\"1975\" y=\"170\" /><mxPoint x=\"1934\" y=\"170\" /><mxPoint x=\"1934\" y=\"400\" /><mxPoint x=\"2062\" y=\"400\" /></Array></mxGeometry></mxCell><mxCell id=\"10013\" value=\"loads /app\" style=\"edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=10;\" vertex=\"1\" connectable=\"0\" parent=\"13\"><mxGeometry x=\"-0.8806\" y=\"0\" relative=\"1\" as=\"geometry\"><mxPoint x=\"0\" y=\"10\" as=\"offset\" /></mxGeometry></mxCell><mxCell id=\"14\" value=\"\" style=\"rounded=1;exitX=1.0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.0;entryY=0.25;entryDx=0;entryDy=0;strokeColor=#6b7280;strokeWidth=1.5;fontSize=10;\" edge=\"1\" source=\"3\" target=\"5\" parent=\"1\"><mxGeometry relative=\"1\" as=\"geometry\"><Array as=\"points\"><mxPoint x=\"1804\" y=\"297\" /><mxPoint x=\"1804\" y=\"300\" /><mxPoint x=\"1994\" y=\"300\" /><mxPoint x=\"1994\" y=\"430\" /><mxPoint x=\"2004\" y=\"430\" /><mxPoint x=\"2004\" y=\"429\" /></Array></mxGeometry></mxCell><mxCell id=\"10014\" value=\"loads /app\" style=\"edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=10;\" vertex=\"1\" connectable=\"0\" parent=\"14\"><mxGeometry x=\"-0.6628\" y=\"0\" relative=\"1\" as=\"geometry\"><mxPoint x=\"0\" y=\"-10\" as=\"offset\" /></mxGeometry></mxCell><mxCell id=\"15\" value=\"\" style=\"rounded=1;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.6667;entryY=0.0;entryDx=0;entryDy=0;strokeColor=#6b7280;strokeWidth=1.5;fontSize=10;\" edge=\"1\" source=\"4\" target=\"5\" parent=\"1\"><mxGeometry relative=\"1\" as=\"geometry\"><Array as=\"points\"><mxPoint x=\"2215\" y=\"340\" /><mxPoint x=\"2214\" y=\"340\" /><mxPoint x=\"2214\" y=\"400\" /><mxPoint x=\"2115\" y=\"400\" /></Array></mxGeometry></mxCell><mxCell id=\"10015\" value=\"loads /app\" style=\"edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=10;\" vertex=\"1\" connectable=\"0\" parent=\"15\"><mxGeometry x=\"-0.6813\" y=\"0\" relative=\"1\" as=\"geometry\"><mxPoint x=\"10\" y=\"0\" as=\"offset\" /></mxGeometry></mxCell><mxCell id=\"16\" value=\"\" style=\"rounded=1;exitX=0.0;exitY=0.5;exitDx=0;exitDy=0;entryX=1.0;entryY=0.5;entryDx=0;entryDy=0;strokeColor=#6b7280;strokeWidth=1.5;fontSize=10;\" edge=\"1\" source=\"5\" target=\"6\" parent=\"1\"><mxGeometry relative=\"1\" as=\"geometry\"><Array as=\"points\"><mxPoint x=\"2004\" y=\"449\" /><mxPoint x=\"2004\" y=\"450\" /><mxPoint x=\"1944\" y=\"450\" /><mxPoint x=\"1944\" y=\"469\" /></Array></mxGeometry></mxCell><mxCell id=\"10016\" value=\"mounts\" style=\"edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=10;\" vertex=\"1\" connectable=\"0\" parent=\"16\"><mxGeometry x=\"-0.28\" y=\"0\" relative=\"1\" as=\"geometry\"><mxPoint x=\"0\" y=\"-10\" as=\"offset\" /></mxGeometry></mxCell><mxCell id=\"17\" value=\"\" style=\"rounded=1;exitX=1.0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.0;entryY=0.5;entryDx=0;entryDy=0;strokeColor=#6b7280;strokeWidth=1.5;fontSize=10;\" edge=\"1\" source=\"5\" target=\"7\" parent=\"1\"><mxGeometry relative=\"1\" as=\"geometry\"><Array as=\"points\"><mxPoint x=\"2184\" y=\"449\" /><mxPoint x=\"2184\" y=\"450\" /><mxPoint x=\"2244\" y=\"450\" /><mxPoint x=\"2244\" y=\"454\" /></Array></mxGeometry></mxCell><mxCell id=\"10017\" value=\"exposes\" style=\"edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=10;\" vertex=\"1\" connectable=\"0\" parent=\"17\"><mxGeometry x=\"-0.2706\" y=\"0\" relative=\"1\" as=\"geometry\"><mxPoint x=\"0\" y=\"-10\" as=\"offset\" /></mxGeometry></mxCell><mxCell id=\"18\" value=\"\" style=\"rounded=1;exitX=0.0;exitY=0.75;exitDx=0;exitDy=0;entryX=1.0;entryY=0.3333;entryDx=0;entryDy=0;strokeColor=#6b7280;strokeWidth=1.5;fontSize=10;\" edge=\"1\" source=\"5\" target=\"8\" parent=\"1\"><mxGeometry relative=\"1\" as=\"geometry\"><Array as=\"points\"><mxPoint x=\"2004\" y=\"469\" /><mxPoint x=\"2004\" y=\"470\" /><mxPoint x=\"1964\" y=\"470\" /><mxPoint x=\"1964\" y=\"390\" /><mxPoint x=\"1704\" y=\"390\" /><mxPoint x=\"1704\" y=\"459\" /></Array></mxGeometry></mxCell><mxCell id=\"10018\" value=\"spawns thread\" style=\"edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=10;\" vertex=\"1\" connectable=\"0\" parent=\"18\"><mxGeometry x=\"-0.8894\" y=\"0\" relative=\"1\" as=\"geometry\"><mxPoint x=\"0\" y=\"-10\" as=\"offset\" /></mxGeometry></mxCell><mxCell id=\"19\" value=\"\" style=\"rounded=1;exitX=1.0;exitY=0.6667;exitDx=0;exitDy=0;entryX=0.0;entryY=0.5;entryDx=0;entryDy=0;strokeColor=#6b7280;strokeWidth=1.5;fontSize=10;\" edge=\"1\" source=\"8\" target=\"9\" parent=\"1\"><mxGeometry relative=\"1\" as=\"geometry\"><Array as=\"points\"><mxPoint x=\"1704\" y=\"479\" /><mxPoint x=\"1704\" y=\"480\" /><mxPoint x=\"1734\" y=\"480\" /><mxPoint x=\"1734\" y=\"600\" /><mxPoint x=\"1884\" y=\"600\" /><mxPoint x=\"1884\" y=\"599\" /></Array></mxGeometry></mxCell><mxCell id=\"10019\" value=\"watches \u2192 builds\" style=\"edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=10;\" vertex=\"1\" connectable=\"0\" parent=\"19\"><mxGeometry x=\"-0.8075\" y=\"0\" relative=\"1\" as=\"geometry\"><mxPoint x=\"0\" y=\"-10\" as=\"offset\" /></mxGeometry></mxCell><mxCell id=\"20\" value=\"\" style=\"rounded=1;exitX=0.5;exitY=0.0;exitDx=0;exitDy=0;entryX=0.5;entryY=1.0;entryDx=0;entryDy=0;strokeColor=#6b7280;strokeWidth=1.5;fontSize=10;\" edge=\"1\" source=\"9\" target=\"6\" parent=\"1\"><mxGeometry relative=\"1\" as=\"geometry\"><Array as=\"points\"><mxPoint x=\"1969\" y=\"560\" /><mxPoint x=\"1974\" y=\"560\" /><mxPoint x=\"1974\" y=\"510\" /><mxPoint x=\"1849\" y=\"510\" /></Array></mxGeometry></mxCell><mxCell id=\"10020\" value=\"npm run build\" style=\"edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=10;\" vertex=\"1\" connectable=\"0\" parent=\"20\"><mxGeometry x=\"-0.735\" y=\"0\" relative=\"1\" as=\"geometry\"><mxPoint x=\"10\" y=\"0\" as=\"offset\" /></mxGeometry></mxCell><mxCell id=\"21\" value=\"&amp;#x2937; window_mgmt\" style=\"ellipse;whiteSpace=wrap;html=1;fillColor=#fef3c7;strokeColor=#92400e;fontFamily=monospace;fontSize=8;fontStyle=1;\" vertex=\"1\" parent=\"1\"><mxGeometry x=\"1945\" y=\"161\" width=\"60\" height=\"16\" as=\"geometry\" /></mxCell><mxCell id=\"22\" value=\"&amp;#x2936; tauri_shell\" style=\"ellipse;whiteSpace=wrap;html=1;fillColor=#fef3c7;strokeColor=#92400e;fontFamily=monospace;fontSize=8;fontStyle=1;\" vertex=\"1\" parent=\"1\"><mxGeometry x=\"1699\" y=\"707\" width=\"60\" height=\"16\" as=\"geometry\" /></mxCell><mxCell id=\"23\" value=\"\" style=\"rounded=1;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;strokeColor=#6b7280;strokeWidth=1.5;fontSize=10;\" edge=\"1\" source=\"2\" target=\"21\" parent=\"1\"><mxGeometry relative=\"1\" as=\"geometry\" /></mxCell><mxCell id=\"24\" value=\"\" style=\"rounded=1;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;strokeColor=#6b7280;strokeWidth=1.5;fontSize=10;\" edge=\"1\" source=\"22\" target=\"10\" parent=\"1\"><mxGeometry relative=\"1\" as=\"geometry\" /></mxCell><mxCell id=\"25\" value=\"&amp;#x2937; settings\" style=\"ellipse;whiteSpace=wrap;html=1;fillColor=#fef3c7;strokeColor=#92400e;fontFamily=monospace;fontSize=8;fontStyle=1;\" vertex=\"1\" parent=\"1\"><mxGeometry x=\"2009\" y=\"161\" width=\"60\" height=\"16\" as=\"geometry\" /></mxCell><mxCell id=\"26\" value=\"&amp;#x2936; tauri_shell\" style=\"ellipse;whiteSpace=wrap;html=1;fillColor=#fef3c7;strokeColor=#92400e;fontFamily=monospace;fontSize=8;fontStyle=1;\" vertex=\"1\" parent=\"1\"><mxGeometry x=\"1939\" y=\"707\" width=\"60\" height=\"16\" as=\"geometry\" /></mxCell><mxCell id=\"27\" value=\"\" style=\"rounded=1;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;strokeColor=#6b7280;strokeWidth=1.5;fontSize=10;\" edge=\"1\" source=\"2\" target=\"25\" parent=\"1\"><mxGeometry relative=\"1\" as=\"geometry\" /></mxCell><mxCell id=\"28\" value=\"\" style=\"rounded=1;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;strokeColor=#6b7280;strokeWidth=1.5;fontSize=10;\" edge=\"1\" source=\"26\" target=\"11\" parent=\"1\"><mxGeometry relative=\"1\" as=\"geometry\" /></mxCell><mxCell id=\"29\" value=\"&amp;#x2937; url_opener\" style=\"ellipse;whiteSpace=wrap;html=1;fillColor=#fef3c7;strokeColor=#92400e;fontFamily=monospace;fontSize=8;fontStyle=1;\" vertex=\"1\" parent=\"1\"><mxGeometry x=\"2073\" y=\"161\" width=\"60\" height=\"16\" as=\"geometry\" /></mxCell><mxCell id=\"30\" value=\"&amp;#x2936; tauri_shell\" style=\"ellipse;whiteSpace=wrap;html=1;fillColor=#fef3c7;strokeColor=#92400e;fontFamily=monospace;fontSize=8;fontStyle=1;\" vertex=\"1\" parent=\"1\"><mxGeometry x=\"2179\" y=\"707\" width=\"60\" height=\"16\" as=\"geometry\" /></mxCell><mxCell id=\"31\" value=\"\" style=\"rounded=1;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;strokeColor=#6b7280;strokeWidth=1.5;fontSize=10;\" edge=\"1\" source=\"2\" target=\"29\" parent=\"1\"><mxGeometry relative=\"1\" as=\"geometry\" /></mxCell><mxCell id=\"32\" value=\"\" style=\"rounded=1;exitX=0.5;exitY=1.0;exitDx=0;exitDy=0;entryX=0.5;entryY=0.0;entryDx=0;entryDy=0;strokeColor=#6b7280;strokeWidth=1.5;fontSize=10;\" edge=\"1\" source=\"30\" target=\"12\" parent=\"1\"><mxGeometry relative=\"1\" as=\"geometry\" /></mxCell></root></mxGraphModel>";
 var config = {"nav": true, "resize": false, "toolbar": "zoom layers lightbox", "fit": true, "page": false};
 var container = document.getElementById('diagram');
-var viewer = null;
 var viewerMode = "cdn";
 
 function setSize() {
-  var main = document.getElementById('main');
-  container.style.width  = Math.round(main.offsetWidth  * 0.9) + 'px';
-  container.style.height = Math.round(main.offsetHeight * 0.9) + 'px';
+  container.style.width  = Math.round(window.innerWidth  * 0.8) + 'px';
+  container.style.height = Math.round(window.innerHeight * 0.8) + 'px';
 }
+
+setSize();
 
 if (typeof GraphViewer === 'undefined' || typeof mxUtils === 'undefined') {
   
@@ -91,25 +75,15 @@ if (typeof GraphViewer === 'undefined' || typeof mxUtils === 'undefined') {
     'background:#fef2f2;border:1px solid #fecaca;border-radius:6px;' +
     'max-width:560px;margin:auto;line-height:1.5;">' + msg + '</div>';
 
-  throw new Error('viewer not loaded');
+} else {
+  var xmlDoc = mxUtils.parseXml(xmlStr);
+  var viewer = new GraphViewer(container, xmlDoc.documentElement, config);
+  setTimeout(function() { fitGraph(viewer, container); }, 50);
+  window.addEventListener('resize', function() {
+    setSize();
+    fitGraph(viewer, container);
+  });
 }
-
-function loadDiagram(idx) {
-  document.querySelectorAll('#sidebar button').forEach(function(b) { b.classList.remove('active'); });
-  document.getElementById('btn-' + idx).classList.add('active');
-  setSize();
-  container.innerHTML = '';
-  var xmlDoc = mxUtils.parseXml(diagrams[names[idx]]);
-  viewer = new GraphViewer(container, xmlDoc.documentElement, config);
-  setTimeout(function() { if (viewer && viewer.graph) viewer.graph.fit(); }, 50);
-}
-
-window.addEventListener('resize', function() {
-  setSize();
-  if (viewer && viewer.graph) viewer.graph.fit();
-});
-
-loadDiagram(0);
 </script>
 </body>
 </html>

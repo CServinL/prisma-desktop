@@ -37,3 +37,13 @@ npm run build      # output → prisma/ui/build/
 ```
 
 Then restart `prisma serve` — it mounts `ui/build/` at `/app` automatically.
+
+## Before opening a PR
+
+Regenerate the architecture diagram whenever Rust modules are added, removed, or renamed:
+
+```bash
+.venv/bin/python docs/reflection/module-map.py
+```
+
+Include the updated `docs/reflection/module-map.html` in the PR so reviewers can inspect the diagram.
