@@ -40,10 +40,18 @@ Then restart `prisma serve` — it mounts `ui/build/` at `/app` automatically.
 
 ## Before opening a PR
 
-Regenerate the architecture diagram whenever Rust modules are added, removed, or renamed:
+Regenerate all diagrams:
 
 ```bash
-.venv/bin/python docs/reflection/module-map.py
+for f in docs/diagrams/*.py; do .venv/bin/python "$f"; done
 ```
 
-Include the updated `docs/reflection/module-map.html` in the PR so reviewers can inspect the diagram.
+Diagrams live in `docs/diagrams/`. Include updated HTML files in the PR — reviewing them is part of the PR checklist:
+
+| File | Type | What it shows |
+|------|------|---------------|
+| `01_system_topology.html` | SystemMap | Clients, Tauri shell internals, server, UI pipeline |
+| `02_deployment.html` | SystemMap | Physical processes: WSL2, Windows host, internet |
+| `03a_open_stream.html` | SequenceMap | User opens a research stream in the UI |
+| `03b_vault_search.html` | SequenceMap | Fast + deep vault search flows |
+| `03c_dev_hot_reload.html` | SequenceMap | Dev workflow: edit → auto-rebuild → browser reload |
