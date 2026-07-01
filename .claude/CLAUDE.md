@@ -6,7 +6,9 @@ The UI source lives in the sibling `prisma/ui/` directory.
 The Python backend lives in the sibling `prisma/` repo (`prisma serve`).
 
 Tauri is the "PWA runtime" for Linux/WSL2 — platforms that don't support native PWA install.
-It opens a native window pointed at `http://127.0.0.1:8765/app` (served by `prisma serve`).
+It opens a native window pointed at `http://127.0.0.1:8766/app` — the Web process
+(served by `prisma serve`'s supervisor; see ADR-012 in the `prisma` repo). REST/WebSocket
+calls go to the separate API process at `:8765` (configurable as "Server URL" in Settings).
 On Android, iOS, and macOS the same URL is used directly in the browser as a PWA.
 
 ## What lives here
@@ -20,13 +22,13 @@ On Android, iOS, and macOS the same URL is used directly in the browser as a PWA
 ```bash
 # terminal 1 — backend + UI
 cd ../prisma
-.venv/bin/prisma serve        # serves API on :8765 and UI at :8765/app
+.venv/bin/prisma serve        # supervisor: API :8765, Web/UI :8766, ChromaDB :8767
 
 # terminal 2 — Tauri shell
 PATH="$HOME/.cargo/bin:$PATH" npm run tauri dev
 ```
 
-The Tauri shell loads `http://127.0.0.1:8765/app` — no Vite dev server needed.
+The Tauri shell loads `http://127.0.0.1:8766/app` — no Vite dev server needed.
 
 ## Building the UI
 
