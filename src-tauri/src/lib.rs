@@ -130,6 +130,16 @@ pub fn run() {
         ])
         .setup(move |app| {
             if let Some(win) = app.get_webview_window("main") {
+                // bundle.icon in tauri.conf.json only applies to packaged builds —
+                // `cargo tauri dev` shows the desktop's generic fallback icon
+                // otherwise. Set it explicitly at runtime so dev mode matches too.
+                if let Ok(img) = image::load_from_memory(include_bytes!("../icons/128x128.png")) {
+                    let rgba = img.to_rgba8();
+                    let (width, height) = rgba.dimensions();
+                    let icon = tauri::image::Image::new_owned(rgba.into_raw(), width, height);
+                    let _ = win.set_icon(icon);
+                }
+
                 // Restore window state
                 if settings.window_maximized == Some(true) {
                     let _ = win.maximize();
