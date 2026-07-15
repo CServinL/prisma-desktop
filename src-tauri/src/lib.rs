@@ -18,7 +18,11 @@ struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            scale: 1.0,
+            // 1x reads as uncomfortably small on today's typical high-density
+            // displays (confirmed live on a 4K monitor) — 1.5x is a more
+            // usable out-of-the-box default for a fresh install with no
+            // settings.json yet; still adjustable 1x-5x in Settings.
+            scale: 1.5,
             server_url: "http://127.0.0.1:8765".into(),
             window_width: None,
             window_height: None,
