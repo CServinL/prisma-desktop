@@ -13,7 +13,9 @@ On Android, iOS, and macOS the same URL is used directly in the browser as a PWA
 
 ## What lives here
 
-- `src-tauri/` — Rust code: window management, settings persistence, WSL2-aware URL opener
+- `src-tauri/src/settings.rs` / `window.rs` — window management, settings persistence, WSL2-aware URL opener
+- `src-tauri/src/auth/` — ADR-011 password-mode login (`sync_login`/`sync_logout`/`sync_status` commands), `auth.json` session store
+- `src-tauri/src/sync/` — vault-sync engine: fs-watcher push (`push.rs`), WebSocket pull (`pull.rs`), initial-reconciliation diff (`manifest.rs`) — see README's "Vault Sync & Auth" section for the design
 - `src-tauri/tauri.conf.json` — window config, CSP, icons
 - No SvelteKit source — that is in `prisma/ui/`
 
@@ -24,8 +26,9 @@ On Android, iOS, and macOS the same URL is used directly in the browser as a PWA
 cd ../prisma
 .venv/bin/prisma serve        # supervisor: API :8765, Web/UI :8766, ChromaDB :8767
 
-# terminal 2 — Tauri shell
-PATH="$HOME/.cargo/bin:$PATH" npm run tauri dev
+# terminal 2 — Tauri shell (tauri-cli via `cargo install tauri-cli --version "^2"`,
+# no Node/npm needed here — this repo is Rust only)
+PATH="$HOME/.cargo/bin:$PATH" cargo tauri dev
 ```
 
 The Tauri shell loads `http://127.0.0.1:8766/app` — no Vite dev server needed.
