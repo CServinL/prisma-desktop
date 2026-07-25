@@ -254,10 +254,25 @@ pub async fn resolve_conflict_push_side(
 
     if local_mtime >= server_mtime {
         write_conflict_copy(&local_path, &server_body, server_mtime);
-        if let Ok(new_mtime) = push_file(ctx, rel, local_body, Some(server_mtime)).await {
-            let mut state = ctx.state.lock().unwrap();
-            state.files.insert(rel.to_string(), TrackedFile { last_synced_mtime: new_mtime });
-            save_sync_state(&state);
+        match push_file(ctx, rel, local_body, Some(server_mtime)).await {
+            Ok(new_mtime) => {
+                let mut state = ctx.state.lock().unwrap();
+                state.files.insert(rel.to_string(), TrackedFile { last_synced_mtime: new_mtime });
+                save_sync_state(&state);
+            }
+            // Retrying with the server's own reported mtime and still
+            // getting a 409 back means something's genuinely wrong (server
+            // clock/storage weirdness, or a third writer) -- not a case the
+            // next debounced fs event will resolve on its own the way a
+            // plain PushError::Other might, so it's worth its own log line.
+            Err(PushError::Conflict { mtime: retry_mtime, .. }) => {
+                eprintln!(
+                    "prisma-desktop sync: {rel} still conflicts after retrying with the server's own mtime ({retry_mtime}, expected {server_mtime})"
+                );
+            }
+            Err(PushError::Other(reason)) => {
+                eprintln!("prisma-desktop sync: retry push {rel} failed: {reason}");
+            }
         }
     } else {
         write_conflict_copy(&local_path, local_body, local_mtime);
