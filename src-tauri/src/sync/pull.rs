@@ -1,6 +1,22 @@
-//! Server -> desktop: a persistent WebSocket connection receives
-//! `vault_change` push notifications and pulls the changed file. Auth is
-//! carried via the `Sec-WebSocket-Protocol` subprotocol (["bearer",
+//! Server <-> desktop over one persistent WebSocket connection. As of the
+//! 2026-07-26 redesign, the server is the sole sync orchestrator: it asks
+//! this client for information (`request_manifest`) and tells it what to do
+//! (`push_file`, `request_file`) rather than this client deciding on its own
+//! to push whenever its local fs watcher fires. That watcher-driven design
+//! caused a real, sustained bug -- a local fs-watcher event is not proof
+//! content actually changed, and with two independent sides each free to
+//! decide "I should push now," a spurious/duplicate watcher event could
+//! loop indefinitely with nothing to arbitrate it. Now there is exactly one
+//! decision-maker (the server), and every operation that matters gets an
+//! explicit acknowledgement back to whichever side needs to trust it
+//! completed -- mirroring a normal network ACK: a push-down isn't
+//! considered done by the server until this client confirms it (`file_synced`),
+//! a pull-up is already confirmed by the ordinary HTTP response the PUT
+//! returns, and a bare notification (`file_changed`/`file_deleted`) gets an
+//! explicit `ack` back when the server decides no further action is needed,
+//! so this client is never left guessing whether its message arrived.
+//!
+//! Auth is carried via the `Sec-WebSocket-Protocol` subprotocol (["bearer",
 //! "<jwt>"]) rather than a query param, matching the server's
 //! AuthMiddleware/_bearer_from_ws (see prisma/server/auth.py) — this keeps
 //! the token out of URLs/logs on both sides of the connection.
@@ -9,15 +25,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
+use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 
 use super::SyncContext;
 
 #[derive(Deserialize)]
-struct VaultChangeEvent {
+struct IncomingMessage {
     #[serde(rename = "type")]
     kind: String,
     action: Option<String>,
@@ -33,6 +50,7 @@ pub async fn run_pull_loop(ctx: Arc<SyncContext>, stop: Arc<AtomicBool>) {
             // expected state for a personal LAN tool, not an error to
             // surface loudly.
         }
+        *ctx.ws_outbound.lock().unwrap() = None;
         if stop.load(Ordering::SeqCst) {
             break;
         }
@@ -59,17 +77,38 @@ async fn connect_and_listen(ctx: &Arc<SyncContext>, stop: &Arc<AtomicBool>) -> R
     let (ws_stream, _response) = tokio_tungstenite::connect_async(request)
         .await
         .map_err(|e| e.to_string())?;
-    let (_write, mut read) = ws_stream.split();
+    let (mut write, mut read) = ws_stream.split();
 
-    while !stop.load(Ordering::SeqCst) {
-        match read.next().await {
-            Some(Ok(Message::Text(text))) => handle_message(ctx, &text).await,
-            Some(Ok(Message::Close(_))) | None => break,
-            Some(Ok(_)) => {} // ping/pong/binary — nothing to do
-            Some(Err(e)) => return Err(e.to_string()),
+    // Give the fs watcher (and anything else) a way to send messages over
+    // this connection without owning the socket itself.
+    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    *ctx.ws_outbound.lock().unwrap() = Some(tx);
+
+    loop {
+        if stop.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        tokio::select! {
+            incoming = read.next() => {
+                match incoming {
+                    Some(Ok(Message::Text(text))) => handle_message(ctx, &text).await,
+                    Some(Ok(Message::Close(_))) | None => return Ok(()),
+                    Some(Ok(_)) => {} // ping/pong/binary — nothing to do
+                    Some(Err(e)) => return Err(e.to_string()),
+                }
+            }
+            outgoing = rx.recv() => {
+                match outgoing {
+                    Some(text) => {
+                        if write.send(Message::Text(text.into())).await.is_err() {
+                            return Ok(()); // connection dropped — outer loop reconnects
+                        }
+                    }
+                    None => {} // channel sender dropped — connection is being torn down elsewhere
+                }
+            }
         }
     }
-    Ok(())
 }
 
 fn to_ws_url(server_url: &str, client_id: &str) -> String {
@@ -84,32 +123,53 @@ fn to_ws_url(server_url: &str, client_id: &str) -> String {
 }
 
 async fn handle_message(ctx: &Arc<SyncContext>, text: &str) {
-    let Ok(event) = serde_json::from_str::<VaultChangeEvent>(text) else { return };
-    if event.kind != "vault_change" {
-        return; // stream_progress and any future event types aren't sync's concern
-    }
-    let Some(path) = event.path else { return };
-    match event.action.as_deref() {
-        Some("sync_delete") => {
-            let _ = std::fs::remove_file(ctx.vault_path.join(&path));
-            let mut state = ctx.state.lock().unwrap();
-            state.files.remove(&path);
-            super::save_sync_state(&state);
+    let Ok(msg) = serde_json::from_str::<IncomingMessage>(text) else { return };
+    match msg.kind.as_str() {
+        "request_manifest" => {
+            let files = super::manifest::build_manifest(&ctx.vault_path);
+            super::send_ws_message(ctx, &serde_json::json!({ "type": "manifest_response", "files": files }));
         }
-        Some("sync_write") | Some("save") | Some("create") => {
-            // The write we're about to make will itself trigger the local
-            // fs watcher — mark it so push.rs's handler recognizes and
-            // skips it instead of pushing it straight back.
-            super::mark_suppressed_write(ctx, &path);
-            super::manifest::pull_and_write(ctx, &path).await;
+        "request_file" => {
+            if let Some(path) = msg.path {
+                // Server decided it needs this file — the same push logic
+                // the (now-removed) watcher-triggered path used, complete
+                // with its existing conflict/expected_mtime handling. The
+                // HTTP response this produces is itself the ack the server
+                // needs; no separate message required.
+                super::push::push_path(ctx, &path).await;
+            }
         }
-        Some("delete") => {
-            super::mark_suppressed_write(ctx, &path);
-            let _ = std::fs::remove_file(ctx.vault_path.join(&path));
-            let mut state = ctx.state.lock().unwrap();
-            state.files.remove(&path);
-            super::save_sync_state(&state);
+        // Existing ADR-010 event type: both ordinary UI-originated vault
+        // edits (from any connected client, not just this one) and this
+        // client's own orchestrated push-down decisions arrive this way.
+        "vault_change" => {
+            let Some(path) = msg.path else { return };
+            match msg.action.as_deref() {
+                Some("sync_delete") | Some("delete") => {
+                    super::mark_suppressed_write(ctx, &path);
+                    let _ = std::fs::remove_file(ctx.vault_path.join(&path));
+                    let mut state = ctx.state.lock().unwrap();
+                    state.files.remove(&path);
+                    super::save_sync_state(&state);
+                }
+                Some("sync_write") | Some("save") | Some("create") => {
+                    super::mark_suppressed_write(ctx, &path);
+                    let synced = super::manifest::pull_and_write(ctx, &path).await;
+                    // ACK: the server doesn't consider a push-down complete
+                    // until it hears back that this client actually applied
+                    // it (mirrors a network ACK — see this module's own
+                    // doc comment for why that matters here).
+                    if let Some((hash, mtime)) = synced {
+                        super::send_ws_message(
+                            ctx,
+                            &serde_json::json!({ "type": "file_synced", "path": path, "hash": hash, "mtime": mtime }),
+                        );
+                    }
+                }
+                _ => {}
+            }
         }
+        "ack" => {} // server acknowledging a file_changed/file_deleted notification — nothing to do
         _ => {}
     }
 }

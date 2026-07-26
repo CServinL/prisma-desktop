@@ -33,12 +33,19 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # sleeps) since importing any tokio item requires an explicit Cargo edge,
 # but nothing here ever constructs a tokio::runtime::Runtime itself.
 reqwest = { version = "0.12", features = ["json"] }
-tokio = { version = "1", features = ["time"] }
+tokio = { version = "1", features = ["time", "macros", "sync"] }
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
 notify = "7"
 notify-debouncer-full = "0.4"
 uuid = { version = "1", features = ["v4", "serde"] }
+# Content-hash check before pushing (see sync/mod.rs's TrackedFile::content_hash)
+# -- the fs watcher firing is not proof content actually changed; the KG/Chroma
+# indexers already learned this lesson (see prisma's knowledge_graph_service.py
+# _indexed_hash/_set_indexed_hash) but the sync engine never got the same
+# treatment, so a spurious/duplicate watcher event pushed identical content
+# over and over with nothing to catch it.
+sha2 = "0.10"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 webkit2gtk = { version = "2.0" }

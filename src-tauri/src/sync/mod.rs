@@ -23,6 +23,27 @@ pub use manifest::RemoteEntry;
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct TrackedFile {
     pub last_synced_mtime: f64,
+    /// SHA256 hex digest of the content as of the last successful sync
+    /// (push or pull). The single source of truth for "did this file's
+    /// content actually change" -- the fs watcher firing is NOT proof of
+    /// that on its own (confirmed live 2026-07-26: a sustained loop of
+    /// hundreds of pushes for unchanged content, with no corresponding real
+    /// edits). KG/Chroma already learned this exact lesson (see
+    /// knowledge_graph_service.py's _indexed_hash/_set_indexed_hash) but the
+    /// sync engine never got the same treatment -- push_path pushed
+    /// whatever the watcher told it to, unconditionally. Empty string means
+    /// "never synced" (any real content differs from it, so the first push
+    /// always proceeds).
+    #[serde(default)]
+    pub content_hash: String,
+}
+
+/// SHA256 hex digest of `body` -- see TrackedFile::content_hash.
+pub fn content_hash(body: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(body.as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -124,6 +145,23 @@ pub struct SyncContext {
     /// instead of pushed — set right before a pull-driven write lands, so
     /// that write doesn't echo straight back to the server as a push.
     suppress_writes: Mutex<HashSet<String>>,
+    /// Set by pull::connect_and_listen once the WS connection is live;
+    /// lets any other part of the engine (the fs watcher, in particular)
+    /// send a message to the server over that same connection without
+    /// owning the socket itself. None when disconnected -- sends are
+    /// best-effort, matching this tool's existing "offline is normal"
+    /// philosophy (see pull::run_pull_loop's reconnect loop).
+    pub ws_outbound: Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>,
+}
+
+/// Best-effort send of `msg` to the server over the live WS connection, if
+/// any. Silently drops the message when disconnected -- the next
+/// request_manifest on reconnect (see pull.rs) is what actually guarantees
+/// eventual consistency, not this notification.
+pub fn send_ws_message(ctx: &SyncContext, msg: &serde_json::Value) {
+    if let Some(tx) = ctx.ws_outbound.lock().unwrap().as_ref() {
+        let _ = tx.send(msg.to_string());
+    }
 }
 
 pub fn mark_suppressed_write(ctx: &SyncContext, rel: &str) {
@@ -257,7 +295,7 @@ pub async fn resolve_conflict_push_side(
         match push_file(ctx, rel, local_body, Some(server_mtime)).await {
             Ok(new_mtime) => {
                 let mut state = ctx.state.lock().unwrap();
-                state.files.insert(rel.to_string(), TrackedFile { last_synced_mtime: new_mtime });
+                state.files.insert(rel.to_string(), TrackedFile { last_synced_mtime: new_mtime, content_hash: content_hash(local_body) });
                 save_sync_state(&state);
             }
             // Retrying with the server's own reported mtime and still
@@ -277,9 +315,10 @@ pub async fn resolve_conflict_push_side(
     } else {
         write_conflict_copy(&local_path, local_body, local_mtime);
         mark_suppressed_write(ctx, rel);
+        let hash = content_hash(&server_body);
         let _ = std::fs::write(&local_path, &server_body);
         let mut state = ctx.state.lock().unwrap();
-        state.files.insert(rel.to_string(), TrackedFile { last_synced_mtime: server_mtime });
+        state.files.insert(rel.to_string(), TrackedFile { last_synced_mtime: server_mtime, content_hash: hash });
         save_sync_state(&state);
     }
 }
@@ -363,6 +402,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn content_hash_is_deterministic_and_content_sensitive() {
+        assert_eq!(content_hash("hello"), content_hash("hello"));
+        assert_ne!(content_hash("hello"), content_hash("hello!"));
+        // Known SHA256("hello") — pins the algorithm/encoding, not just
+        // "some hash function was applied."
+        assert_eq!(
+            content_hash("hello"),
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
+    }
+
     fn test_ctx() -> SyncContext {
         SyncContext {
             http: reqwest::Client::new(),
@@ -372,6 +423,7 @@ mod tests {
             token: Mutex::new(None),
             state: Mutex::new(SyncState::default()),
             suppress_writes: Mutex::new(HashSet::new()),
+            ws_outbound: Mutex::new(None),
         }
     }
 
@@ -433,6 +485,7 @@ mod tests {
                 token: Mutex::new(Some(token)),
                 state: Mutex::new(SyncState::default()),
                 suppress_writes: Mutex::new(HashSet::new()),
+                ws_outbound: Mutex::new(None),
             };
 
             let manifest = fetch_manifest(&ctx).await.expect("manifest fetch failed");
@@ -518,6 +571,7 @@ mod tests {
                 token: Mutex::new(Some(token.clone())),
                 state: Mutex::new(SyncState::default()),
                 suppress_writes: Mutex::new(HashSet::new()),
+                ws_outbound: Mutex::new(None),
             };
             let _ = delete_remote(&cleanup_ctx, "notes/_manual_ws_check.md").await;
 
@@ -596,6 +650,7 @@ mod tests {
                 token: Mutex::new(Some(token.clone())),
                 state: Mutex::new(SyncState::default()),
                 suppress_writes: Mutex::new(HashSet::new()),
+                ws_outbound: Mutex::new(None),
             };
             let test_path = "notes/_manual_ws_echo_check.md";
             let _ = delete_remote(&ctx, test_path).await;
@@ -666,10 +721,15 @@ pub async fn sync_start(app: tauri::AppHandle) -> Result<(), String> {
         token: Mutex::new(token),
         state: Mutex::new(load_sync_state()),
         suppress_writes: Mutex::new(HashSet::new()),
+        ws_outbound: Mutex::new(None),
     });
 
-    manifest::run_initial_reconciliation(&ctx).await;
-
+    // No client-driven initial reconciliation anymore -- the server asks
+    // for a full manifest (request_manifest) as soon as the WS connection
+    // below is live, and decides push/pull/conflict per path from there.
+    // See pull.rs's module doc comment for the full 2026-07-26 redesign
+    // rationale (the previous client-decides-when-to-push design caused a
+    // real, sustained duplicate-push loop with nothing to arbitrate it).
     let watcher = push::start_watcher(ctx.clone()).map_err(|e| e.to_string())?;
     let stop = Arc::new(AtomicBool::new(false));
     tauri::async_runtime::spawn(pull::run_pull_loop(ctx.clone(), stop.clone()));
@@ -743,6 +803,7 @@ pub async fn sync_diff(app: tauri::AppHandle) -> Result<SyncDiffInfo, String> {
         token: Mutex::new(token),
         state: Mutex::new(load_sync_state()),
         suppress_writes: Mutex::new(HashSet::new()),
+        ws_outbound: Mutex::new(None),
     };
 
     // Reuse a running engine's live state if there is one — otherwise the
