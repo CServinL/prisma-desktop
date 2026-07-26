@@ -34,7 +34,15 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # but nothing here ever constructs a tokio::runtime::Runtime itself.
 reqwest = { version = "0.12", features = ["json"] }
 tokio = { version = "1", features = ["time", "macros", "sync"] }
-tokio-tungstenite = "0.24"
+# default-features carries no TLS backend at all -- every wss:// connect
+# attempt failed with "TLS support not compiled in" and silently retried
+# forever (confirmed live 2026-07-26: this has been broken since the
+# vault-sync feature's very first commit, invisible until now because the
+# HTTP push/pull calls use reqwest, which does have a default TLS backend,
+# so those always worked and masked the WS channel being fully non-functional
+# against any TLS server this whole time). native-tls to match reqwest's own
+# default backend rather than adding a second TLS stack (rustls) alongside it.
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 futures-util = "0.3"
 notify = "7"
 notify-debouncer-full = "0.4"

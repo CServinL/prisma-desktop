@@ -45,10 +45,14 @@ const RECONNECT_DELAY: Duration = Duration::from_secs(5);
 
 pub async fn run_pull_loop(ctx: Arc<SyncContext>, stop: Arc<AtomicBool>) {
     while !stop.load(Ordering::SeqCst) {
-        if let Err(_err) = connect_and_listen(&ctx, &stop).await {
-            // Best-effort reconnect — offline/unreachable is a normal,
-            // expected state for a personal LAN tool, not an error to
-            // surface loudly.
+        if let Err(err) = connect_and_listen(&ctx, &stop).await {
+            // Logged (not just silently retried) so a genuinely broken
+            // connection -- as opposed to ordinary offline/unreachable --
+            // is at least diagnosable from stdout/journal. Confirmed live
+            // 2026-07-26: a missing TLS backend produced the exact same
+            // silent-forever-retry symptom as being offline, and was only
+            // found by adding this logging back temporarily.
+            eprintln!("prisma-desktop sync: WS connection to {} failed: {err}", ctx.server_url);
         }
         *ctx.ws_outbound.lock().unwrap() = None;
         if stop.load(Ordering::SeqCst) {
