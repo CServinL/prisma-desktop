@@ -11,6 +11,18 @@ use std::sync::Arc;
 
 use super::{relative_md_path, SyncContext, TrackedFile};
 
+/// Same tolerance as sync_routes.py's `_MTIME_TOLERANCE_SECONDS`. Exact `==`
+/// on Unix-timestamp-magnitude f64s (~1.78e9 at this scale) can fail after a
+/// cross-language JSON round-trip: the two ends land one float64 ULP apart
+/// (~238ns at this magnitude) even though nothing actually changed. That bug
+/// was already found and fixed on the Python side (prisma#40) — this mirrors
+/// the same fix here rather than reintroducing exact equality.
+const MTIME_TOLERANCE_SECONDS: f64 = 1e-3;
+
+fn mtime_unchanged(a: f64, b: f64) -> bool {
+    (a - b).abs() <= MTIME_TOLERANCE_SECONDS
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct LocalEntry {
     pub path: String,
@@ -71,7 +83,7 @@ pub fn reconcile(
             (Some(l), None) => match track {
                 // Present locally, missing on the server.
                 None => actions.push(ReconcileAction::PushNew(path.to_string())),
-                Some(t) if l.mtime == t.last_synced_mtime => {
+                Some(t) if mtime_unchanged(l.mtime, t.last_synced_mtime) => {
                     // Unchanged locally since last sync -> the server-side
                     // deletion (e.g. via the UI) should be mirrored here.
                     actions.push(ReconcileAction::PullDelete(path.to_string()))
@@ -81,7 +93,7 @@ pub fn reconcile(
             (None, Some(r)) => match track {
                 // Present on the server, missing locally.
                 None => actions.push(ReconcileAction::PullNew(path.to_string())),
-                Some(t) if r.mtime == t.last_synced_mtime => {
+                Some(t) if mtime_unchanged(r.mtime, t.last_synced_mtime) => {
                     // Unchanged remotely since last sync -> the local
                     // deletion should be propagated to the server.
                     actions.push(ReconcileAction::PushDelete(path.to_string()))
@@ -261,6 +273,24 @@ mod tests {
         let t = tracked(&[("notes/ghost.md", 100.0)]);
         let actions = reconcile(&[], &[], &t);
         assert_eq!(actions, vec![]);
+    }
+
+    #[test]
+    fn mtime_one_ulp_apart_is_still_treated_as_unchanged() {
+        // Regression test for the float-ULP bug already fixed on the Python
+        // side (prisma#40): exact `==` on a Unix-timestamp-magnitude f64
+        // fails after a cross-language JSON round-trip even with no real
+        // change, because the two ends can land one float64 ULP apart.
+        let synced_mtime = 1_700_000_000.123_456_7_f64;
+        let one_ulp_later = synced_mtime.next_up();
+        assert_ne!(synced_mtime, one_ulp_later, "test setup must pick two distinct floats");
+
+        let local = vec![LocalEntry { path: "notes/a.md".into(), mtime: one_ulp_later }];
+        let t = tracked(&[("notes/a.md", synced_mtime)]);
+        // Present locally, absent on server, tracked — should read as
+        // "unchanged since last sync" (PullDelete), not PushReCreate.
+        let actions = reconcile(&local, &[], &t);
+        assert_eq!(actions, vec![ReconcileAction::PullDelete("notes/a.md".into())]);
     }
 
     #[test]
