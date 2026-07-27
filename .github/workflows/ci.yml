@@ -1,41 +1,38 @@
 name: CI
 
+# Each target platform is its own independent job, not a matrix -- flip one
+# on by deleting its `if: false` once you actually have hardware/a runner
+# to build or test it on, without touching the others. Only Linux x86_64
+# is real today (this is a Linux/WSL2 app -- WSL-aware at runtime via
+# _is_wsl()/_wsl_windows_ip()-style helpers, not a separate Windows build).
+# A genuinely native (non-WSL-aware) Windows build is planned but not
+# started; macOS is planned once Apple Silicon hardware is available.
+#
+# Android/iOS removed 2026-07-27: workflow_dispatch-only, never ran on
+# push/PR, and both assumed npm/Svelte source that moved to prisma/ui/ back
+# in PR #3 -- dead CI for platforms that were never actually maintained.
+
 on:
   push:
     branches: [main]
   pull_request:
 
 jobs:
-  check-desktop:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runs-on: ubuntu-22.04
-            rust-target: x86_64-unknown-linux-gnu
-          - runs-on: windows-latest
-            rust-target: x86_64-pc-windows-msvc
-
-    runs-on: ${{ matrix.runs-on }}
+  check-linux-x86_64:
+    runs-on: ubuntu-22.04
 
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.rust-target }}
+          targets: x86_64-unknown-linux-gnu
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
 
       - name: Install Linux system deps
-        if: matrix.runs-on == 'ubuntu-22.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -44,51 +41,103 @@ jobs:
             librsvg2-dev \
             patchelf
 
-      - name: Install npm deps
-        run: npm ci
-
-      - name: Svelte check
-        run: npm run check
-
       - name: Cargo check
         working-directory: src-tauri
-        run: cargo check --target ${{ matrix.rust-target }}
+        run: cargo check --target x86_64-unknown-linux-gnu
 
-  check-android:
-    runs-on: ubuntu-22.04
+  # Disabled: no ARM Linux hardware to build/test on yet. Runner label as
+  # of 2026-07 is ubuntu-22.04-arm/ubuntu-24.04-arm -- verify it's still
+  # correct (GitHub's hosted-ARM-runner naming has changed before) when
+  # enabling this.
+  check-linux-arm64:
+    if: false
+    runs-on: ubuntu-22.04-arm
 
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android
+          targets: aarch64-unknown-linux-gnu
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
 
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 21
+      - name: Install Linux system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install NDK
-        run: sdkmanager "ndk;26.3.11579264"
-
-      - name: Install npm deps
-        run: npm ci
-
-      - name: Cargo check (Android)
+      - name: Cargo check
         working-directory: src-tauri
-        env:
-          NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/26.3.11579264
-        run: cargo check --target aarch64-linux-android
+        run: cargo check --target aarch64-unknown-linux-gnu
+
+  # Disabled: no native (non-WSL) Windows build exists yet -- this is new
+  # work, not a port of the WSL-aware Linux binary.
+  check-windows-x86_64:
+    if: false
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Cargo check
+        working-directory: src-tauri
+        run: cargo check --target x86_64-pc-windows-msvc
+
+  # Disabled: same as check-windows-x86_64, plus GitHub's hosted Windows-ARM
+  # runner (windows-11-arm as of 2026-07) may still be limited availability
+  # -- verify when enabling.
+  check-windows-arm64:
+    if: false
+    runs-on: windows-11-arm
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Cargo check
+        working-directory: src-tauri
+        run: cargo check --target aarch64-pc-windows-msvc
+
+  # Disabled until Apple Silicon hardware is available (also needed for the
+  # one-time `tauri ios init`-style bootstrap this repo's iOS work would
+  # eventually need, per the now-removed ios.yml's own note).
+  check-macos-arm64:
+    if: false
+    runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Cargo check
+        working-directory: src-tauri
+        run: cargo check --target aarch64-apple-darwin
