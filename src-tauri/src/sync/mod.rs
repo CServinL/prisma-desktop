@@ -317,7 +317,7 @@ fn write_conflict_copy(original: &Path, losing_body: &str, losing_mtime: f64) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -401,7 +401,9 @@ mod tests {
         );
     }
 
-    fn test_ctx() -> SyncContext {
+    // pub(crate) so sibling modules' own tests (pull.rs) can build a
+    // SyncContext the same way instead of a second near-duplicate helper.
+    pub(crate) fn test_ctx() -> SyncContext {
         SyncContext {
             http: reqwest::Client::new(),
             server_url: "http://example.invalid".into(),
