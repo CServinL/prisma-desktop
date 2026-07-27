@@ -1,43 +1,39 @@
 name: Release
 
+# Each target platform is its own independent job, not a matrix or a
+# dropdown choice -- flip one on by deleting its `if: false` once you
+# actually have hardware/a runner to build it on, without touching the
+# others. Only Linux x86_64 is real today (this is a Linux/WSL2 app --
+# WSL-aware at runtime, not a separate Windows build). A genuinely native
+# (non-WSL-aware) Windows build is planned but not started; macOS is
+# planned once Apple Silicon hardware is available (also needed for the
+# one-time `tauri ios init`-style bootstrap this repo's iOS work would
+# eventually need, per the now-removed ios.yml's own note).
+
 on:
   workflow_dispatch:
     inputs:
-      platform:
-        description: Target platform
-        required: true
-        type: choice
-        options:
-          - linux
-          - windows
-          - macos
       tag:
         description: Release tag (e.g. v0.1.0)
         required: true
         type: string
 
 jobs:
-  build:
-    runs-on: ${{ fromJSON('{"linux":"ubuntu-22.04","windows":"windows-latest","macos":"macos-14"}')[inputs.platform] }}
+  release-linux-x86_64:
+    runs-on: ubuntu-22.04
 
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ fromJSON('{"linux":"x86_64-unknown-linux-gnu","windows":"x86_64-pc-windows-msvc","macos":"aarch64-apple-darwin"}')[inputs.platform] }}
+          targets: x86_64-unknown-linux-gnu
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
 
       - name: Install Linux system deps
-        if: inputs.platform == 'linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -46,17 +42,139 @@ jobs:
             librsvg2-dev \
             patchelf
 
-      - name: Install npm deps
-        run: npm ci
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ inputs.tag }}
+          releaseName: "Prisma Desktop ${{ inputs.tag }} (linux-x86_64)"
+          releaseBody: |
+            See the [CHANGELOG](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
+          releaseDraft: true
+          prerelease: false
+
+  # Disabled: no ARM Linux hardware to build on yet. Runner label as of
+  # 2026-07 is ubuntu-22.04-arm/ubuntu-24.04-arm -- verify it's still
+  # correct (GitHub's hosted-ARM-runner naming has changed before) when
+  # enabling this.
+  release-linux-arm64:
+    if: false
+    runs-on: ubuntu-22.04-arm
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Linux system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
 
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ inputs.tag }}
-          releaseName: "Prisma Desktop ${{ inputs.tag }}"
+          releaseName: "Prisma Desktop ${{ inputs.tag }} (linux-arm64)"
           releaseBody: |
             See the [CHANGELOG](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
           releaseDraft: true
           prerelease: false
-          args: ${{ inputs.platform == 'macos' && '--target aarch64-apple-darwin' || '' }}
+          args: --target aarch64-unknown-linux-gnu
+
+  # Disabled: no native (non-WSL) Windows build exists yet -- this is new
+  # work, not a port of the WSL-aware Linux binary.
+  release-windows-x86_64:
+    if: false
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ inputs.tag }}
+          releaseName: "Prisma Desktop ${{ inputs.tag }} (windows-x86_64)"
+          releaseBody: |
+            See the [CHANGELOG](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
+          releaseDraft: true
+          prerelease: false
+
+  # Disabled: same as release-windows-x86_64, plus GitHub's hosted
+  # Windows-ARM runner (windows-11-arm as of 2026-07) may still be limited
+  # availability -- verify when enabling.
+  release-windows-arm64:
+    if: false
+    runs-on: windows-11-arm
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ inputs.tag }}
+          releaseName: "Prisma Desktop ${{ inputs.tag }} (windows-arm64)"
+          releaseBody: |
+            See the [CHANGELOG](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
+          releaseDraft: true
+          prerelease: false
+          args: --target aarch64-pc-windows-msvc
+
+  # Disabled until Apple Silicon hardware is available.
+  release-macos-arm64:
+    if: false
+    runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ inputs.tag }}
+          releaseName: "Prisma Desktop ${{ inputs.tag }} (macos-arm64)"
+          releaseBody: |
+            See the [CHANGELOG](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
+          releaseDraft: true
+          prerelease: false
+          args: --target aarch64-apple-darwin
