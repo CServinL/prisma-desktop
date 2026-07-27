@@ -11,12 +11,29 @@ use std::path::{Path, PathBuf};
 
 use serde::{de::DeserializeOwned, Serialize};
 
+/// `PRISMA_DESKTOP_CONFIG_DIR` overrides the OS config dir when set --
+/// exists so tests can redirect settings/auth-store/sync-state I/O at a
+/// tmp dir instead of silently reading/writing the real
+/// `~/.config/prisma-desktop/` on whatever machine runs `cargo test`.
+/// Nothing set this before resolve_conflict_push_side (via save_sync_state)
+/// got its first direct test -- every prior test either avoided these
+/// functions entirely or constructed a SyncContext by hand without going
+/// through load/save at all.
 pub fn config_file_path(filename: &str) -> PathBuf {
-    dirs_next::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("prisma-desktop")
-        .join(filename)
+    let base = std::env::var_os("PRISMA_DESKTOP_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(dirs_next::config_dir)
+        .unwrap_or_else(|| PathBuf::from("."));
+    base.join("prisma-desktop").join(filename)
 }
+
+/// Serializes any test that sets PRISMA_DESKTOP_CONFIG_DIR against every
+/// other such test -- std::env::set_var mutates whole-process state, and
+/// cargo test runs tests in parallel by default, so two tests setting this
+/// concurrently to different tmp dirs would race on which one "wins."
+/// Unrelated tests that never touch this env var are unaffected.
+#[cfg(test)]
+pub(crate) static TEST_ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub fn load_json<T: DeserializeOwned + Default>(path: &Path) -> T {
     std::fs::read_to_string(path)
@@ -81,6 +98,16 @@ mod tests {
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn config_file_path_honors_env_override() {
+        let _guard = TEST_ENV_GUARD.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("prisma-desktop-test-{}-cfgdir", uuid::Uuid::new_v4()));
+        std::env::set_var("PRISMA_DESKTOP_CONFIG_DIR", &dir);
+        let path = config_file_path("whatever.json");
+        std::env::remove_var("PRISMA_DESKTOP_CONFIG_DIR");
+        assert_eq!(path, dir.join("prisma-desktop").join("whatever.json"));
     }
 
 }

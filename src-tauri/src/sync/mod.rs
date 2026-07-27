@@ -415,6 +415,86 @@ mod tests {
     }
 
     #[test]
+    fn write_conflict_copy_writes_losing_body_to_conflict_sibling() {
+        let dir = std::env::temp_dir().join(format!("prisma-desktop-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("notes")).unwrap();
+        let original = dir.join("notes/a.md");
+        std::fs::write(&original, "current content").unwrap();
+
+        write_conflict_copy(&original, "losing content", 1_700_000_000.0);
+
+        let conflict_path = dir.join("notes/a.conflict-1700000000.md");
+        assert!(conflict_path.exists());
+        assert_eq!(std::fs::read_to_string(&conflict_path).unwrap(), "losing content");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn resolve_conflict_push_side_server_wins_overwrites_local_and_writes_conflict_copy() {
+        // The server-wins branch never touches the network (only the
+        // local-wins branch retries push_file), so this exercises the real
+        // resolve_conflict_push_side end to end without needing an HTTP
+        // mock -- covering the actual "don't lose the loser's edit"
+        // mechanism this function exists for, previously exercised only by
+        // #[ignore]'d manual tests against a live server.
+        let _guard = crate::json_store::TEST_ENV_GUARD.lock().unwrap();
+        let config_dir = std::env::temp_dir().join(format!("prisma-desktop-test-{}-cfg", uuid::Uuid::new_v4()));
+        std::env::set_var("PRISMA_DESKTOP_CONFIG_DIR", &config_dir);
+
+        let vault_dir = std::env::temp_dir().join(format!("prisma-desktop-test-{}-vault", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(vault_dir.join("notes")).unwrap();
+        let local_path = vault_dir.join("notes/a.md");
+        std::fs::write(&local_path, "local content").unwrap();
+        // The server-wins branch names the conflict copy after the LOSER's
+        // (local's) own real on-disk mtime, not server_mtime -- read it the
+        // same way the source does so the test doesn't have to guess it.
+        let local_mtime = std::fs::metadata(&local_path)
+            .and_then(|m| m.modified())
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+
+        let ctx = Arc::new(SyncContext { vault_path: vault_dir.clone(), ..test_ctx() });
+
+        // Deliberately far in the future so it's always newer than the
+        // just-created local file's real mtime -- avoids needing a
+        // filetime-setting crate just to control this in a test.
+        let server_mtime = 9_999_999_999.0;
+        let server_body = "server content".to_string();
+
+        tauri::async_runtime::block_on(resolve_conflict_push_side(
+            &ctx, "notes/a.md", "local content", server_body.clone(), server_mtime,
+        ));
+
+        std::env::remove_var("PRISMA_DESKTOP_CONFIG_DIR");
+
+        // local file overwritten with the server's content
+        assert_eq!(std::fs::read_to_string(&local_path).unwrap(), server_body);
+
+        // the loser (local content) preserved as a conflict copy, not discarded
+        let conflict_path = vault_dir.join(format!("notes/a.conflict-{}.md", local_mtime as i64));
+        assert!(conflict_path.exists());
+        assert_eq!(std::fs::read_to_string(&conflict_path).unwrap(), "local content");
+
+        // state updated to reflect the server's version as now-synced
+        {
+            let state = ctx.state.lock().unwrap();
+            let tracked = state.files.get("notes/a.md").expect("tracked entry for notes/a.md");
+            assert_eq!(tracked.last_synced_mtime, server_mtime);
+            assert_eq!(tracked.content_hash, content_hash(&server_body));
+        }
+
+        // the write was marked suppressed so the fs watcher doesn't echo
+        // this overwrite back to the server as a push
+        assert!(consume_suppressed_write(&ctx, "notes/a.md"));
+
+        std::fs::remove_dir_all(&vault_dir).ok();
+        std::fs::remove_dir_all(&config_dir).ok();
+    }
+
+    #[test]
     fn suppressed_write_is_consumed_exactly_once() {
         let ctx = test_ctx();
         mark_suppressed_write(&ctx, "notes/a.md");
