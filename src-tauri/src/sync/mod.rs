@@ -707,15 +707,9 @@ pub(crate) mod tests {
         std::fs::create_dir_all(vault_dir.join("notes")).unwrap();
         let local_path = vault_dir.join("notes/a.md");
         std::fs::write(&local_path, "local content").unwrap();
-        let local_mtime = std::fs::metadata(&local_path)
-            .and_then(|m| m.modified())
-            .unwrap()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs_f64();
 
-        // local wins (local_mtime >= server_mtime) -- server_mtime
-        // deliberately far in the past.
+        // Local wins: the just-created file's real on-disk mtime ("now") is
+        // always >= this deliberately-far-in-the-past server_mtime.
         let server_mtime = 100.0;
         let server_body = "server content".to_string();
         // The retry push (with the server's own mtime as expected_mtime)
