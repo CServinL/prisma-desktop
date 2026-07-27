@@ -85,6 +85,40 @@ pub fn resolve_vault_path(settings: &Settings) -> PathBuf {
         .join("vault")
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_vault_path_uses_configured_path_when_set() {
+        let mut s = Settings::default();
+        s.vault_path = Some("/custom/vault/location".into());
+        assert_eq!(resolve_vault_path(&s), PathBuf::from("/custom/vault/location"));
+    }
+
+    #[test]
+    fn resolve_vault_path_falls_back_when_none() {
+        let mut s = Settings::default();
+        s.vault_path = None;
+        let expected = dirs_next::data_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("prisma-desktop")
+            .join("vault");
+        assert_eq!(resolve_vault_path(&s), expected);
+    }
+
+    #[test]
+    fn resolve_vault_path_falls_back_when_empty_string() {
+        let mut s = Settings::default();
+        s.vault_path = Some(String::new());
+        let expected = dirs_next::data_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("prisma-desktop")
+            .join("vault");
+        assert_eq!(resolve_vault_path(&s), expected);
+    }
+}
+
 #[tauri::command]
 pub fn get_settings() -> Settings {
     load_settings()

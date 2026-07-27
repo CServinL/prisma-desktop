@@ -177,3 +177,42 @@ async fn handle_message(ctx: &Arc<SyncContext>, text: &str) {
         _ => {}
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn to_ws_url_converts_https_to_wss() {
+        assert_eq!(
+            to_ws_url("https://prisma.forge.internal", "client-1"),
+            "wss://prisma.forge.internal/ws?client_id=client-1"
+        );
+    }
+
+    #[test]
+    fn to_ws_url_converts_http_to_ws() {
+        assert_eq!(
+            to_ws_url("http://127.0.0.1:8765", "client-1"),
+            "ws://127.0.0.1:8765/ws?client_id=client-1"
+        );
+    }
+
+    #[test]
+    fn to_ws_url_falls_back_to_ws_when_no_scheme_prefix() {
+        // Not expected in practice (server_url is always http(s):// per
+        // settings.rs), but to_ws_url must not panic on it.
+        assert_eq!(
+            to_ws_url("127.0.0.1:8765", "client-1"),
+            "ws://127.0.0.1:8765/ws?client_id=client-1"
+        );
+    }
+
+    #[test]
+    fn to_ws_url_strips_trailing_slash_before_appending_path() {
+        assert_eq!(
+            to_ws_url("http://127.0.0.1:8765/", "client-1"),
+            "ws://127.0.0.1:8765/ws?client_id=client-1"
+        );
+    }
+}
