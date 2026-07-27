@@ -11,6 +11,18 @@ use std::sync::Arc;
 
 use super::{relative_md_path, SyncContext, TrackedFile};
 
+/// Same tolerance as sync_routes.py's `_MTIME_TOLERANCE_SECONDS`. Exact `==`
+/// on Unix-timestamp-magnitude f64s (~1.78e9 at this scale) can fail after a
+/// cross-language JSON round-trip: the two ends land one float64 ULP apart
+/// (~238ns at this magnitude) even though nothing actually changed. That bug
+/// was already found and fixed on the Python side (prisma#40) — this mirrors
+/// the same fix here rather than reintroducing exact equality.
+const MTIME_TOLERANCE_SECONDS: f64 = 1e-3;
+
+fn mtime_unchanged(a: f64, b: f64) -> bool {
+    (a - b).abs() <= MTIME_TOLERANCE_SECONDS
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct LocalEntry {
     pub path: String,
@@ -71,7 +83,7 @@ pub fn reconcile(
             (Some(l), None) => match track {
                 // Present locally, missing on the server.
                 None => actions.push(ReconcileAction::PushNew(path.to_string())),
-                Some(t) if l.mtime == t.last_synced_mtime => {
+                Some(t) if mtime_unchanged(l.mtime, t.last_synced_mtime) => {
                     // Unchanged locally since last sync -> the server-side
                     // deletion (e.g. via the UI) should be mirrored here.
                     actions.push(ReconcileAction::PullDelete(path.to_string()))
@@ -81,7 +93,7 @@ pub fn reconcile(
             (None, Some(r)) => match track {
                 // Present on the server, missing locally.
                 None => actions.push(ReconcileAction::PullNew(path.to_string())),
-                Some(t) if r.mtime == t.last_synced_mtime => {
+                Some(t) if mtime_unchanged(r.mtime, t.last_synced_mtime) => {
                     // Unchanged remotely since last sync -> the local
                     // deletion should be propagated to the server.
                     actions.push(ReconcileAction::PushDelete(path.to_string()))
@@ -94,28 +106,17 @@ pub fn reconcile(
     actions
 }
 
+/// Its own tree walk previously duplicated build_manifest's byte-for-byte
+/// (same walk, same mtime computation, minus the hash) -- now expressed as
+/// build_manifest's result mapped down to just path/mtime, so there is
+/// exactly one traversal implementation instead of two that could silently
+/// diverge (e.g. a future symlink-handling or skip-condition fix landing in
+/// only one of them).
 pub(crate) fn walk_local_md(vault_path: &Path) -> Vec<LocalEntry> {
-    let mut out = Vec::new();
-    let mut stack = vec![vault_path.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            let Some(rel) = relative_md_path(vault_path, &path) else { continue };
-            let Ok(meta) = entry.metadata() else { continue };
-            let Ok(modified) = meta.modified() else { continue };
-            let mtime = modified
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs_f64())
-                .unwrap_or(0.0);
-            out.push(LocalEntry { path: rel, mtime });
-        }
-    }
-    out
+    build_manifest(vault_path)
+        .into_iter()
+        .map(|e| LocalEntry { path: e.path, mtime: e.mtime })
+        .collect()
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
@@ -202,65 +203,99 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// Single-path branches of reconcile()'s tracked/untracked lifecycle
+    /// table -- was 8 separate ~4-line functions (the same shape as
+    /// prisma's own diff_manifest test suite, its documented mirror);
+    /// collapsed into one table-driven test for the same reason that one
+    /// was parametrized. Each row still traces to a named case, same as
+    /// before, just without the boilerplate per row.
     #[test]
-    fn new_local_untracked_file_is_pushed() {
-        let local = vec![LocalEntry { path: "notes/a.md".into(), mtime: 100.0 }];
-        let actions = reconcile(&local, &[], &HashMap::new());
-        assert_eq!(actions, vec![ReconcileAction::PushNew("notes/a.md".into())]);
+    fn reconcile_single_path_decision_table() {
+        struct Case {
+            name: &'static str,
+            local_mtime: Option<f64>,
+            remote_mtime: Option<f64>,
+            tracked_mtime: Option<f64>,
+            expected: Option<ReconcileAction>,
+        }
+        let cases = [
+            Case {
+                name: "new_local_untracked_file_is_pushed",
+                local_mtime: Some(100.0), remote_mtime: None, tracked_mtime: None,
+                expected: Some(ReconcileAction::PushNew("notes/a.md".into())),
+            },
+            Case {
+                name: "new_remote_untracked_file_is_pulled",
+                local_mtime: None, remote_mtime: Some(100.0), tracked_mtime: None,
+                expected: Some(ReconcileAction::PullNew("notes/a.md".into())),
+            },
+            Case {
+                name: "both_present_is_a_noop_at_the_manifest_level",
+                local_mtime: Some(100.0), remote_mtime: Some(100.0), tracked_mtime: None,
+                expected: None,
+            },
+            Case {
+                name: "tracked_file_deleted_locally_unchanged_remotely_propagates_delete",
+                local_mtime: None, remote_mtime: Some(100.0), tracked_mtime: Some(100.0),
+                expected: Some(ReconcileAction::PushDelete("notes/a.md".into())),
+            },
+            Case {
+                name: "tracked_file_deleted_locally_but_remote_changed_pulls_instead_of_deleting",
+                local_mtime: None, remote_mtime: Some(200.0), tracked_mtime: Some(100.0),
+                expected: Some(ReconcileAction::PullUpdate("notes/a.md".into())),
+            },
+            Case {
+                name: "tracked_file_deleted_remotely_unchanged_locally_propagates_delete",
+                local_mtime: Some(100.0), remote_mtime: None, tracked_mtime: Some(100.0),
+                expected: Some(ReconcileAction::PullDelete("notes/a.md".into())),
+            },
+            Case {
+                name: "tracked_file_deleted_remotely_but_local_changed_repushes_instead_of_deleting",
+                local_mtime: Some(200.0), remote_mtime: None, tracked_mtime: Some(100.0),
+                expected: Some(ReconcileAction::PushReCreate("notes/a.md".into())),
+            },
+            Case {
+                // local/remote both absent is a noop regardless of tracked
+                // state (reconcile's (None, None) arm never looks at it).
+                name: "absent_everywhere_is_a_noop",
+                local_mtime: None, remote_mtime: None, tracked_mtime: None,
+                expected: None,
+            },
+        ];
+
+        for case in cases {
+            let local: Vec<LocalEntry> = case.local_mtime
+                .map(|m| vec![LocalEntry { path: "notes/a.md".into(), mtime: m }])
+                .unwrap_or_default();
+            let remote: Vec<RemoteEntry> = case.remote_mtime
+                .map(|m| vec![RemoteEntry { path: "notes/a.md".into(), mtime: m }])
+                .unwrap_or_default();
+            let t = case.tracked_mtime
+                .map(|m| tracked(&[("notes/a.md", m)]))
+                .unwrap_or_default();
+
+            let actions = reconcile(&local, &remote, &t);
+            let expected: Vec<ReconcileAction> = case.expected.into_iter().collect();
+            assert_eq!(actions, expected, "case: {}", case.name);
+        }
     }
 
     #[test]
-    fn new_remote_untracked_file_is_pulled() {
-        let remote = vec![RemoteEntry { path: "notes/a.md".into(), mtime: 100.0 }];
-        let actions = reconcile(&[], &remote, &HashMap::new());
-        assert_eq!(actions, vec![ReconcileAction::PullNew("notes/a.md".into())]);
-    }
+    fn mtime_one_ulp_apart_is_still_treated_as_unchanged() {
+        // Regression test for the float-ULP bug already fixed on the Python
+        // side (prisma#40): exact `==` on a Unix-timestamp-magnitude f64
+        // fails after a cross-language JSON round-trip even with no real
+        // change, because the two ends can land one float64 ULP apart.
+        let synced_mtime = 1_700_000_000.123_456_7_f64;
+        let one_ulp_later = synced_mtime.next_up();
+        assert_ne!(synced_mtime, one_ulp_later, "test setup must pick two distinct floats");
 
-    #[test]
-    fn both_present_is_a_noop_at_the_manifest_level() {
-        let local = vec![LocalEntry { path: "notes/a.md".into(), mtime: 100.0 }];
-        let remote = vec![RemoteEntry { path: "notes/a.md".into(), mtime: 100.0 }];
-        let actions = reconcile(&local, &remote, &HashMap::new());
-        assert_eq!(actions, vec![]);
-    }
-
-    #[test]
-    fn tracked_file_deleted_locally_unchanged_remotely_propagates_delete() {
-        let remote = vec![RemoteEntry { path: "notes/a.md".into(), mtime: 100.0 }];
-        let t = tracked(&[("notes/a.md", 100.0)]);
-        let actions = reconcile(&[], &remote, &t);
-        assert_eq!(actions, vec![ReconcileAction::PushDelete("notes/a.md".into())]);
-    }
-
-    #[test]
-    fn tracked_file_deleted_locally_but_remote_changed_pulls_instead_of_deleting() {
-        let remote = vec![RemoteEntry { path: "notes/a.md".into(), mtime: 200.0 }];
-        let t = tracked(&[("notes/a.md", 100.0)]);
-        let actions = reconcile(&[], &remote, &t);
-        assert_eq!(actions, vec![ReconcileAction::PullUpdate("notes/a.md".into())]);
-    }
-
-    #[test]
-    fn tracked_file_deleted_remotely_unchanged_locally_propagates_delete() {
-        let local = vec![LocalEntry { path: "notes/a.md".into(), mtime: 100.0 }];
-        let t = tracked(&[("notes/a.md", 100.0)]);
+        let local = vec![LocalEntry { path: "notes/a.md".into(), mtime: one_ulp_later }];
+        let t = tracked(&[("notes/a.md", synced_mtime)]);
+        // Present locally, absent on server, tracked — should read as
+        // "unchanged since last sync" (PullDelete), not PushReCreate.
         let actions = reconcile(&local, &[], &t);
         assert_eq!(actions, vec![ReconcileAction::PullDelete("notes/a.md".into())]);
-    }
-
-    #[test]
-    fn tracked_file_deleted_remotely_but_local_changed_repushes_instead_of_deleting() {
-        let local = vec![LocalEntry { path: "notes/a.md".into(), mtime: 200.0 }];
-        let t = tracked(&[("notes/a.md", 100.0)]);
-        let actions = reconcile(&local, &[], &t);
-        assert_eq!(actions, vec![ReconcileAction::PushReCreate("notes/a.md".into())]);
-    }
-
-    #[test]
-    fn absent_everywhere_is_a_noop() {
-        let t = tracked(&[("notes/ghost.md", 100.0)]);
-        let actions = reconcile(&[], &[], &t);
-        assert_eq!(actions, vec![]);
     }
 
     #[test]

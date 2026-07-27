@@ -127,3 +127,125 @@ pub async fn push_path(ctx: &Arc<SyncContext>, rel: &str) {
         super::save_sync_state(&state);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    // notify_change never calls save_sync_state or any HTTP endpoint (only
+    // send_ws_message, an in-memory channel send) -- no config-dir override
+    // or HTTP mock needed, unlike push_path below it.
+
+    fn ctx_with_channel(vault_path: PathBuf) -> (Arc<SyncContext>, tokio::sync::mpsc::UnboundedReceiver<String>) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let ctx = Arc::new(SyncContext {
+            vault_path,
+            ws_outbound: Mutex::new(Some(tx)),
+            ..crate::sync::tests::test_ctx()
+        });
+        (ctx, rx)
+    }
+
+    #[test]
+    fn notify_change_skips_notification_when_content_hash_unchanged() {
+        // The actual fix for the real, previously-shipped bug this module's
+        // doc comment describes: a watcher event alone is not proof content
+        // changed, so an unchanged hash must not even notify the server.
+        let dir = std::env::temp_dir().join(format!("prisma-desktop-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("notes")).unwrap();
+        std::fs::write(dir.join("notes/a.md"), "same content").unwrap();
+        let (ctx, mut rx) = ctx_with_channel(dir.clone());
+        let hash = super::super::content_hash("same content");
+        ctx.state.lock().unwrap().files.insert(
+            "notes/a.md".to_string(),
+            TrackedFile { last_synced_mtime: 100.0, content_hash: hash },
+        );
+
+        tauri::async_runtime::block_on(notify_change(&ctx, "notes/a.md"));
+
+        assert!(rx.try_recv().is_err(), "unchanged content must not notify the server");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn notify_change_notifies_when_content_hash_differs_from_tracked() {
+        let dir = std::env::temp_dir().join(format!("prisma-desktop-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("notes")).unwrap();
+        std::fs::write(dir.join("notes/a.md"), "new content").unwrap();
+        let (ctx, mut rx) = ctx_with_channel(dir.clone());
+        ctx.state.lock().unwrap().files.insert(
+            "notes/a.md".to_string(),
+            TrackedFile { last_synced_mtime: 100.0, content_hash: "stale-hash".into() },
+        );
+
+        tauri::async_runtime::block_on(notify_change(&ctx, "notes/a.md"));
+
+        let sent = rx.try_recv().expect("expected a file_changed notification");
+        let parsed: serde_json::Value = serde_json::from_str(&sent).unwrap();
+        assert_eq!(parsed["type"], "file_changed");
+        assert_eq!(parsed["path"], "notes/a.md");
+        assert_eq!(parsed["hash"], super::super::content_hash("new content"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn notify_change_notifies_for_new_untracked_file() {
+        let dir = std::env::temp_dir().join(format!("prisma-desktop-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("notes")).unwrap();
+        std::fs::write(dir.join("notes/a.md"), "brand new").unwrap();
+        let (ctx, mut rx) = ctx_with_channel(dir.clone());
+
+        tauri::async_runtime::block_on(notify_change(&ctx, "notes/a.md"));
+
+        let sent = rx.try_recv().expect("expected a file_changed notification");
+        let parsed: serde_json::Value = serde_json::from_str(&sent).unwrap();
+        assert_eq!(parsed["type"], "file_changed");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn notify_change_notifies_delete_for_previously_tracked_file() {
+        let dir = std::env::temp_dir().join(format!("prisma-desktop-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (ctx, mut rx) = ctx_with_channel(dir.clone());
+        ctx.state.lock().unwrap().files.insert(
+            "notes/gone.md".to_string(),
+            TrackedFile { last_synced_mtime: 100.0, content_hash: "whatever".into() },
+        );
+
+        tauri::async_runtime::block_on(notify_change(&ctx, "notes/gone.md"));
+
+        let sent = rx.try_recv().expect("expected a file_deleted notification");
+        let parsed: serde_json::Value = serde_json::from_str(&sent).unwrap();
+        assert_eq!(parsed["type"], "file_deleted");
+        assert_eq!(parsed["path"], "notes/gone.md");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn notify_change_ignores_delete_for_never_tracked_file() {
+        let dir = std::env::temp_dir().join(format!("prisma-desktop-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (ctx, mut rx) = ctx_with_channel(dir.clone());
+
+        tauri::async_runtime::block_on(notify_change(&ctx, "notes/never-existed.md"));
+
+        assert!(rx.try_recv().is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn notify_change_skips_when_write_is_suppressed() {
+        let dir = std::env::temp_dir().join(format!("prisma-desktop-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("notes")).unwrap();
+        std::fs::write(dir.join("notes/a.md"), "just pulled from server").unwrap();
+        let (ctx, mut rx) = ctx_with_channel(dir.clone());
+        super::super::mark_suppressed_write(&ctx, "notes/a.md");
+
+        tauri::async_runtime::block_on(notify_change(&ctx, "notes/a.md"));
+
+        assert!(rx.try_recv().is_err(), "our own pull-driven write must not echo back as a notification");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

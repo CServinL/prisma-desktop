@@ -177,3 +177,144 @@ async fn handle_message(ctx: &Arc<SyncContext>, text: &str) {
         _ => {}
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn to_ws_url_converts_https_to_wss() {
+        assert_eq!(
+            to_ws_url("https://prisma.forge.internal", "client-1"),
+            "wss://prisma.forge.internal/ws?client_id=client-1"
+        );
+    }
+
+    #[test]
+    fn to_ws_url_converts_http_to_ws() {
+        assert_eq!(
+            to_ws_url("http://127.0.0.1:8765", "client-1"),
+            "ws://127.0.0.1:8765/ws?client_id=client-1"
+        );
+    }
+
+    #[test]
+    fn to_ws_url_falls_back_to_ws_when_no_scheme_prefix() {
+        // Not expected in practice (server_url is always http(s):// per
+        // settings.rs), but to_ws_url must not panic on it.
+        assert_eq!(
+            to_ws_url("127.0.0.1:8765", "client-1"),
+            "ws://127.0.0.1:8765/ws?client_id=client-1"
+        );
+    }
+
+    #[test]
+    fn to_ws_url_strips_trailing_slash_before_appending_path() {
+        assert_eq!(
+            to_ws_url("http://127.0.0.1:8765/", "client-1"),
+            "ws://127.0.0.1:8765/ws?client_id=client-1"
+        );
+    }
+
+    // ── handle_message dispatch ──────────────────────────────────────────
+    // Covers the branches that don't need a live HTTP server
+    // (request_file and vault_change/sync_write both call through to
+    // push_path/pull_and_write, which make real HTTP calls -- left for a
+    // follow-up with an HTTP mock).
+
+    fn ctx_with_channel(vault_path: std::path::PathBuf) -> (Arc<SyncContext>, mpsc::UnboundedReceiver<String>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let ctx = Arc::new(SyncContext {
+            vault_path,
+            ws_outbound: std::sync::Mutex::new(Some(tx)),
+            ..crate::sync::tests::test_ctx()
+        });
+        (ctx, rx)
+    }
+
+    #[test]
+    fn handle_message_request_manifest_sends_manifest_response() {
+        let dir = std::env::temp_dir().join(format!("prisma-desktop-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("notes")).unwrap();
+        std::fs::write(dir.join("notes/a.md"), "hello").unwrap();
+        let (ctx, mut rx) = ctx_with_channel(dir.clone());
+
+        tauri::async_runtime::block_on(handle_message(&ctx, r#"{"type":"request_manifest"}"#));
+
+        let sent = rx.try_recv().expect("expected a manifest_response to be sent");
+        let parsed: serde_json::Value = serde_json::from_str(&sent).unwrap();
+        assert_eq!(parsed["type"], "manifest_response");
+        assert_eq!(parsed["files"][0]["path"], "notes/a.md");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn handle_message_vault_change_sync_delete_removes_local_file_and_state() {
+        let _guard = crate::json_store::TEST_ENV_GUARD.lock().unwrap();
+        let config_dir = std::env::temp_dir().join(format!("prisma-desktop-test-{}-cfg", uuid::Uuid::new_v4()));
+        std::env::set_var("PRISMA_DESKTOP_CONFIG_DIR", &config_dir);
+
+        let dir = std::env::temp_dir().join(format!("prisma-desktop-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("notes")).unwrap();
+        let file_path = dir.join("notes/a.md");
+        std::fs::write(&file_path, "will be deleted").unwrap();
+
+        let (ctx, _rx) = ctx_with_channel(dir.clone());
+        ctx.state.lock().unwrap().files.insert(
+            "notes/a.md".to_string(),
+            crate::sync::TrackedFile { last_synced_mtime: 100.0, content_hash: "irrelevant".into() },
+        );
+
+        tauri::async_runtime::block_on(handle_message(
+            &ctx,
+            r#"{"type":"vault_change","action":"sync_delete","path":"notes/a.md"}"#,
+        ));
+
+        std::env::remove_var("PRISMA_DESKTOP_CONFIG_DIR");
+
+        assert!(!file_path.exists());
+        assert!(!ctx.state.lock().unwrap().files.contains_key("notes/a.md"));
+        // the fs watcher's next event for this path must not echo back as a push
+        assert!(super::super::consume_suppressed_write(&ctx, "notes/a.md"));
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&config_dir).ok();
+    }
+
+    #[test]
+    fn handle_message_ack_is_a_noop() {
+        let dir = std::env::temp_dir().join(format!("prisma-desktop-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (ctx, mut rx) = ctx_with_channel(dir.clone());
+
+        tauri::async_runtime::block_on(handle_message(&ctx, r#"{"type":"ack"}"#));
+
+        assert!(rx.try_recv().is_err(), "ack must not trigger any outbound message");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn handle_message_unknown_type_is_ignored() {
+        let dir = std::env::temp_dir().join(format!("prisma-desktop-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (ctx, mut rx) = ctx_with_channel(dir.clone());
+
+        tauri::async_runtime::block_on(handle_message(&ctx, r#"{"type":"something_new"}"#));
+
+        assert!(rx.try_recv().is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn handle_message_malformed_json_does_not_panic() {
+        let dir = std::env::temp_dir().join(format!("prisma-desktop-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (ctx, mut rx) = ctx_with_channel(dir.clone());
+
+        tauri::async_runtime::block_on(handle_message(&ctx, "not json at all"));
+
+        assert!(rx.try_recv().is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

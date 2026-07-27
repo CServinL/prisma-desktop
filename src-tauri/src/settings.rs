@@ -59,27 +59,15 @@ impl Default for Settings {
 }
 
 pub fn settings_path() -> PathBuf {
-    let base = dirs_next::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join("prisma-desktop").join("settings.json")
+    crate::json_store::config_file_path("settings.json")
 }
 
 pub fn load_settings() -> Settings {
-    let path = settings_path();
-    std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    crate::json_store::load_json(&settings_path())
 }
 
 pub fn save_settings(s: &Settings) {
-    let path = settings_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Ok(json) = serde_json::to_string_pretty(s) {
-        let _ = std::fs::write(&path, json);
-    }
+    crate::json_store::save_json(&settings_path(), s, false)
 }
 
 /// Falls back to a sensible default location rather than blocking first
@@ -95,6 +83,40 @@ pub fn resolve_vault_path(settings: &Settings) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
         .join("prisma-desktop")
         .join("vault")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_vault_path_uses_configured_path_when_set() {
+        let mut s = Settings::default();
+        s.vault_path = Some("/custom/vault/location".into());
+        assert_eq!(resolve_vault_path(&s), PathBuf::from("/custom/vault/location"));
+    }
+
+    #[test]
+    fn resolve_vault_path_falls_back_when_none() {
+        let mut s = Settings::default();
+        s.vault_path = None;
+        let expected = dirs_next::data_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("prisma-desktop")
+            .join("vault");
+        assert_eq!(resolve_vault_path(&s), expected);
+    }
+
+    #[test]
+    fn resolve_vault_path_falls_back_when_empty_string() {
+        let mut s = Settings::default();
+        s.vault_path = Some(String::new());
+        let expected = dirs_next::data_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("prisma-desktop")
+            .join("vault");
+        assert_eq!(resolve_vault_path(&s), expected);
+    }
 }
 
 #[tauri::command]

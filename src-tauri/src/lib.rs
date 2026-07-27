@@ -1,3 +1,4 @@
+mod json_store;
 mod settings;
 mod window;
 mod auth;
