@@ -179,6 +179,32 @@ struct ManifestEntry {
     mtime: f64,
 }
 
+/// Mirrors sync_routes.py's Python-side SyncFileWriteRequest model 1:1 --
+/// was previously an ad hoc serde_json::json!() Value even though the
+/// *response* to this same call (FileResponse, above) and the GET side
+/// (ManifestEntry, above) already use typed structs.
+#[derive(Serialize)]
+struct SyncFileWriteRequest<'a> {
+    path: &'a str,
+    body: &'a str,
+    expected_mtime: Option<f64>,
+}
+
+/// sync_routes.py always raises this 409 via
+/// `HTTPException(status_code=409, detail={"body": ..., "mtime": ...})`,
+/// which FastAPI always wraps as `{"detail": {...}}` -- so this is the one
+/// real shape the server ever sends, not a Value navigated defensively.
+#[derive(Deserialize)]
+struct ConflictDetail {
+    body: String,
+    mtime: f64,
+}
+
+#[derive(Deserialize)]
+struct ConflictResponse {
+    detail: ConflictDetail,
+}
+
 fn auth_header(ctx: &SyncContext) -> Option<String> {
     ctx.token.lock().unwrap().clone().map(|t| format!("Bearer {t}"))
 }
@@ -206,18 +232,15 @@ pub async fn push_file(
         .http
         .put(format!("{}/sync/file", ctx.server_url))
         .header("X-Sync-Client-Id", &ctx.client_id)
-        .json(&serde_json::json!({ "path": rel, "body": body, "expected_mtime": expected_mtime }));
+        .json(&SyncFileWriteRequest { path: rel, body, expected_mtime });
     if let Some(h) = auth_header(ctx) {
         req = req.header("Authorization", h);
     }
     let resp = req.send().await.map_err(|e| PushError::Other(e.to_string()))?;
 
     if resp.status() == reqwest::StatusCode::CONFLICT {
-        let detail: serde_json::Value = resp.json().await.map_err(|e| PushError::Other(e.to_string()))?;
-        let d = detail.get("detail").cloned().unwrap_or(detail);
-        let body_val = d.get("body").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let mtime_val = d.get("mtime").and_then(|v| v.as_f64()).unwrap_or(0.0);
-        return Err(PushError::Conflict { body: body_val, mtime: mtime_val });
+        let parsed: ConflictResponse = resp.json().await.map_err(|e| PushError::Other(e.to_string()))?;
+        return Err(PushError::Conflict { body: parsed.detail.body, mtime: parsed.detail.mtime });
     }
     if !resp.status().is_success() {
         return Err(PushError::Other(format!("push failed: {}", resp.status())));
