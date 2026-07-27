@@ -203,65 +203,81 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// Single-path branches of reconcile()'s tracked/untracked lifecycle
+    /// table -- was 8 separate ~4-line functions (the same shape as
+    /// prisma's own diff_manifest test suite, its documented mirror);
+    /// collapsed into one table-driven test for the same reason that one
+    /// was parametrized. Each row still traces to a named case, same as
+    /// before, just without the boilerplate per row.
     #[test]
-    fn new_local_untracked_file_is_pushed() {
-        let local = vec![LocalEntry { path: "notes/a.md".into(), mtime: 100.0 }];
-        let actions = reconcile(&local, &[], &HashMap::new());
-        assert_eq!(actions, vec![ReconcileAction::PushNew("notes/a.md".into())]);
-    }
+    fn reconcile_single_path_decision_table() {
+        struct Case {
+            name: &'static str,
+            local_mtime: Option<f64>,
+            remote_mtime: Option<f64>,
+            tracked_mtime: Option<f64>,
+            expected: Option<ReconcileAction>,
+        }
+        let cases = [
+            Case {
+                name: "new_local_untracked_file_is_pushed",
+                local_mtime: Some(100.0), remote_mtime: None, tracked_mtime: None,
+                expected: Some(ReconcileAction::PushNew("notes/a.md".into())),
+            },
+            Case {
+                name: "new_remote_untracked_file_is_pulled",
+                local_mtime: None, remote_mtime: Some(100.0), tracked_mtime: None,
+                expected: Some(ReconcileAction::PullNew("notes/a.md".into())),
+            },
+            Case {
+                name: "both_present_is_a_noop_at_the_manifest_level",
+                local_mtime: Some(100.0), remote_mtime: Some(100.0), tracked_mtime: None,
+                expected: None,
+            },
+            Case {
+                name: "tracked_file_deleted_locally_unchanged_remotely_propagates_delete",
+                local_mtime: None, remote_mtime: Some(100.0), tracked_mtime: Some(100.0),
+                expected: Some(ReconcileAction::PushDelete("notes/a.md".into())),
+            },
+            Case {
+                name: "tracked_file_deleted_locally_but_remote_changed_pulls_instead_of_deleting",
+                local_mtime: None, remote_mtime: Some(200.0), tracked_mtime: Some(100.0),
+                expected: Some(ReconcileAction::PullUpdate("notes/a.md".into())),
+            },
+            Case {
+                name: "tracked_file_deleted_remotely_unchanged_locally_propagates_delete",
+                local_mtime: Some(100.0), remote_mtime: None, tracked_mtime: Some(100.0),
+                expected: Some(ReconcileAction::PullDelete("notes/a.md".into())),
+            },
+            Case {
+                name: "tracked_file_deleted_remotely_but_local_changed_repushes_instead_of_deleting",
+                local_mtime: Some(200.0), remote_mtime: None, tracked_mtime: Some(100.0),
+                expected: Some(ReconcileAction::PushReCreate("notes/a.md".into())),
+            },
+            Case {
+                // local/remote both absent is a noop regardless of tracked
+                // state (reconcile's (None, None) arm never looks at it).
+                name: "absent_everywhere_is_a_noop",
+                local_mtime: None, remote_mtime: None, tracked_mtime: None,
+                expected: None,
+            },
+        ];
 
-    #[test]
-    fn new_remote_untracked_file_is_pulled() {
-        let remote = vec![RemoteEntry { path: "notes/a.md".into(), mtime: 100.0 }];
-        let actions = reconcile(&[], &remote, &HashMap::new());
-        assert_eq!(actions, vec![ReconcileAction::PullNew("notes/a.md".into())]);
-    }
+        for case in cases {
+            let local: Vec<LocalEntry> = case.local_mtime
+                .map(|m| vec![LocalEntry { path: "notes/a.md".into(), mtime: m }])
+                .unwrap_or_default();
+            let remote: Vec<RemoteEntry> = case.remote_mtime
+                .map(|m| vec![RemoteEntry { path: "notes/a.md".into(), mtime: m }])
+                .unwrap_or_default();
+            let t = case.tracked_mtime
+                .map(|m| tracked(&[("notes/a.md", m)]))
+                .unwrap_or_default();
 
-    #[test]
-    fn both_present_is_a_noop_at_the_manifest_level() {
-        let local = vec![LocalEntry { path: "notes/a.md".into(), mtime: 100.0 }];
-        let remote = vec![RemoteEntry { path: "notes/a.md".into(), mtime: 100.0 }];
-        let actions = reconcile(&local, &remote, &HashMap::new());
-        assert_eq!(actions, vec![]);
-    }
-
-    #[test]
-    fn tracked_file_deleted_locally_unchanged_remotely_propagates_delete() {
-        let remote = vec![RemoteEntry { path: "notes/a.md".into(), mtime: 100.0 }];
-        let t = tracked(&[("notes/a.md", 100.0)]);
-        let actions = reconcile(&[], &remote, &t);
-        assert_eq!(actions, vec![ReconcileAction::PushDelete("notes/a.md".into())]);
-    }
-
-    #[test]
-    fn tracked_file_deleted_locally_but_remote_changed_pulls_instead_of_deleting() {
-        let remote = vec![RemoteEntry { path: "notes/a.md".into(), mtime: 200.0 }];
-        let t = tracked(&[("notes/a.md", 100.0)]);
-        let actions = reconcile(&[], &remote, &t);
-        assert_eq!(actions, vec![ReconcileAction::PullUpdate("notes/a.md".into())]);
-    }
-
-    #[test]
-    fn tracked_file_deleted_remotely_unchanged_locally_propagates_delete() {
-        let local = vec![LocalEntry { path: "notes/a.md".into(), mtime: 100.0 }];
-        let t = tracked(&[("notes/a.md", 100.0)]);
-        let actions = reconcile(&local, &[], &t);
-        assert_eq!(actions, vec![ReconcileAction::PullDelete("notes/a.md".into())]);
-    }
-
-    #[test]
-    fn tracked_file_deleted_remotely_but_local_changed_repushes_instead_of_deleting() {
-        let local = vec![LocalEntry { path: "notes/a.md".into(), mtime: 200.0 }];
-        let t = tracked(&[("notes/a.md", 100.0)]);
-        let actions = reconcile(&local, &[], &t);
-        assert_eq!(actions, vec![ReconcileAction::PushReCreate("notes/a.md".into())]);
-    }
-
-    #[test]
-    fn absent_everywhere_is_a_noop() {
-        let t = tracked(&[("notes/ghost.md", 100.0)]);
-        let actions = reconcile(&[], &[], &t);
-        assert_eq!(actions, vec![]);
+            let actions = reconcile(&local, &remote, &t);
+            let expected: Vec<ReconcileAction> = case.expected.into_iter().collect();
+            assert_eq!(actions, expected, "case: {}", case.name);
+        }
     }
 
     #[test]
