@@ -3,6 +3,7 @@ mod settings;
 mod window;
 mod auth;
 mod sync;
+mod zotero;
 
 use tauri::Manager;
 
@@ -13,6 +14,7 @@ use window::{
 };
 use auth::{sync_login, sync_logout, sync_status};
 use sync::{sync_diff, sync_engine_status, sync_start, sync_stop, AppState};
+use zotero::zotero_desktop_ping;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -39,6 +41,7 @@ pub fn run() {
             sync_stop,
             sync_engine_status,
             sync_diff,
+            zotero_desktop_ping,
         ])
         .setup(move |app| {
             if let Some(win) = app.get_webview_window("main") {
