@@ -53,28 +53,15 @@ pub struct SyncState {
 }
 
 fn sync_state_path() -> PathBuf {
-    dirs_next::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("prisma-desktop")
-        .join("sync_state.json")
+    crate::json_store::config_file_path("sync_state.json")
 }
 
 pub fn load_sync_state() -> SyncState {
-    let path = sync_state_path();
-    std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    crate::json_store::load_json(&sync_state_path())
 }
 
 pub fn save_sync_state(state: &SyncState) {
-    let path = sync_state_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Ok(json) = serde_json::to_string_pretty(state) {
-        let _ = std::fs::write(&path, json);
-    }
+    crate::json_store::save_json(&sync_state_path(), state, false)
 }
 
 fn client_id() -> String {

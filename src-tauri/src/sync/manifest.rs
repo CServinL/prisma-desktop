@@ -106,28 +106,17 @@ pub fn reconcile(
     actions
 }
 
+/// Its own tree walk previously duplicated build_manifest's byte-for-byte
+/// (same walk, same mtime computation, minus the hash) -- now expressed as
+/// build_manifest's result mapped down to just path/mtime, so there is
+/// exactly one traversal implementation instead of two that could silently
+/// diverge (e.g. a future symlink-handling or skip-condition fix landing in
+/// only one of them).
 pub(crate) fn walk_local_md(vault_path: &Path) -> Vec<LocalEntry> {
-    let mut out = Vec::new();
-    let mut stack = vec![vault_path.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            let Some(rel) = relative_md_path(vault_path, &path) else { continue };
-            let Ok(meta) = entry.metadata() else { continue };
-            let Ok(modified) = meta.modified() else { continue };
-            let mtime = modified
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs_f64())
-                .unwrap_or(0.0);
-            out.push(LocalEntry { path: rel, mtime });
-        }
-    }
-    out
+    build_manifest(vault_path)
+        .into_iter()
+        .map(|e| LocalEntry { path: e.path, mtime: e.mtime })
+        .collect()
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]

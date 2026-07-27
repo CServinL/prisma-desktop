@@ -15,43 +15,20 @@ pub struct AuthStore {
 }
 
 fn auth_store_path() -> PathBuf {
-    dirs_next::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("prisma-desktop")
-        .join("auth.json")
+    crate::json_store::config_file_path("auth.json")
 }
 
 pub fn load_auth_store() -> AuthStore {
-    let path = auth_store_path();
-    std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    crate::json_store::load_json(&auth_store_path())
 }
 
 pub fn save_auth_store(store: &AuthStore) {
-    let path = auth_store_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let Ok(json) = serde_json::to_string_pretty(store) else { return };
-    if std::fs::write(&path, &json).is_err() {
-        return;
-    }
     // Kept as its own file (not folded into settings.json) and
     // 0600-permissioned — it holds bearer tokens, not just window
     // geometry. A real OS keyring is skipped deliberately: this project
     // explicitly targets WSL2, which has no reliable secret-service to
     // back one.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Ok(meta) = std::fs::metadata(&path) {
-            let mut perms = meta.permissions();
-            perms.set_mode(0o600);
-            let _ = std::fs::set_permissions(&path, perms);
-        }
-    }
+    crate::json_store::save_json(&auth_store_path(), store, true)
 }
 
 pub fn session_for(server_url: &str) -> Option<StoredSession> {
