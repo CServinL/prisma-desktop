@@ -416,6 +416,65 @@ pub(crate) mod tests {
         }
     }
 
+    /// Minimal single-response mock HTTP server for tests exercising
+    /// push_file/pull_file/fetch_manifest/delete_remote/
+    /// resolve_conflict_push_side -- without adding a mocking crate as a
+    /// new dependency. Fully drains the incoming request (headers + any
+    /// Content-Length body) before responding: closing a TcpStream while
+    /// the kernel still has unread inbound bytes buffered can trigger a
+    /// TCP RST instead of a clean close, which reqwest surfaces as
+    /// "received unexpected message from connection" -- confirmed live,
+    /// this was the actual cause the first version of this helper hit
+    /// (naively assuming the client's small write would complete
+    /// regardless of whether the server ever read it -- true for the
+    /// connection to be established, not true for closing it cleanly
+    /// afterward). pub(crate) so pull.rs's/push.rs's own tests can reuse it.
+    pub(crate) fn spawn_mock_response(status: u16, body: &str) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let body = body.to_string();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                use std::io::{BufRead, BufReader, Write};
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut content_length: usize = 0;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        break; // connection closed before headers finished
+                    }
+                    let trimmed = line.trim_end();
+                    if trimmed.is_empty() {
+                        break; // blank line = end of headers
+                    }
+                    if let Some(v) = trimmed.strip_prefix("Content-Length:").or_else(|| trimmed.strip_prefix("content-length:")) {
+                        content_length = v.trim().parse().unwrap_or(0);
+                    }
+                }
+                if content_length > 0 {
+                    let mut discard = vec![0u8; content_length];
+                    let _ = std::io::Read::read_exact(&mut reader, &mut discard);
+                }
+
+                let status_text = match status {
+                    200 => "OK",
+                    201 => "Created",
+                    404 => "Not Found",
+                    409 => "Conflict",
+                    _ => "Error",
+                };
+                let resp = format!(
+                    "HTTP/1.1 {status} {status_text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body,
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        format!("http://{addr}")
+    }
+
     #[test]
     fn write_conflict_copy_writes_losing_body_to_conflict_sibling() {
         let dir = std::env::temp_dir().join(format!("prisma-desktop-test-{}", uuid::Uuid::new_v4()));
@@ -491,6 +550,187 @@ pub(crate) mod tests {
         // the write was marked suppressed so the fs watcher doesn't echo
         // this overwrite back to the server as a push
         assert!(consume_suppressed_write(&ctx, "notes/a.md"));
+
+        std::fs::remove_dir_all(&vault_dir).ok();
+        std::fs::remove_dir_all(&config_dir).ok();
+    }
+
+    // ── push_file / pull_file / fetch_manifest / delete_remote ──────────
+    // Previously covered only by #[ignore]'d manual tests against a live
+    // server (see manual_check_against_real_server below). spawn_mock_response
+    // makes these runnable as part of the normal automated suite.
+
+    // NOTE: SyncContext is built inside each block_on'd async block below,
+    // not before it -- see spawn_mock_response's doc comment for the real
+    // bug this avoided (server must drain the request before closing).
+
+    #[test]
+    fn push_file_success_returns_new_mtime() {
+        let server_url = spawn_mock_response(200, r#"{"body":"ignored","mtime":123.0}"#);
+
+        let result = tauri::async_runtime::block_on(async move {
+            let ctx = SyncContext { server_url, ..test_ctx() };
+            push_file(&ctx, "notes/a.md", "hello", None).await
+        });
+
+        assert_eq!(result.unwrap(), 123.0);
+    }
+
+    #[test]
+    fn push_file_conflict_returns_server_body_and_mtime() {
+        let server_url = spawn_mock_response(
+            409,
+            r#"{"detail":{"body":"server content","mtime":150.0}}"#,
+        );
+
+        let result = tauri::async_runtime::block_on(async move {
+            let ctx = SyncContext { server_url, ..test_ctx() };
+            push_file(&ctx, "notes/a.md", "local content", Some(100.0)).await
+        });
+
+        match result {
+            Err(PushError::Conflict { body, mtime }) => {
+                assert_eq!(body, "server content");
+                assert_eq!(mtime, 150.0);
+            }
+            other => panic!("expected PushError::Conflict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn push_file_server_error_returns_other() {
+        let server_url = spawn_mock_response(500, "");
+
+        let result = tauri::async_runtime::block_on(async move {
+            let ctx = SyncContext { server_url, ..test_ctx() };
+            push_file(&ctx, "notes/a.md", "hello", None).await
+        });
+
+        assert!(matches!(result, Err(PushError::Other(_))));
+    }
+
+    #[test]
+    fn pull_file_success_returns_body_and_mtime() {
+        let server_url = spawn_mock_response(200, r#"{"body":"pulled content","mtime":200.0}"#);
+
+        let result = tauri::async_runtime::block_on(async move {
+            let ctx = SyncContext { server_url, ..test_ctx() };
+            pull_file(&ctx, "notes/a.md").await
+        });
+
+        assert_eq!(result.unwrap(), Some(("pulled content".to_string(), 200.0)));
+    }
+
+    #[test]
+    fn pull_file_not_found_returns_ok_none() {
+        let server_url = spawn_mock_response(404, "");
+
+        let result = tauri::async_runtime::block_on(async move {
+            let ctx = SyncContext { server_url, ..test_ctx() };
+            pull_file(&ctx, "notes/gone.md").await
+        });
+
+        assert_eq!(result.unwrap(), None);
+    }
+
+    #[test]
+    fn fetch_manifest_parses_entries() {
+        let server_url = spawn_mock_response(200, r#"[{"path":"notes/a.md","mtime":100.0},{"path":"notes/b.md","mtime":200.0}]"#);
+
+        let result = tauri::async_runtime::block_on(async move {
+            let ctx = SyncContext { server_url, ..test_ctx() };
+            fetch_manifest(&ctx).await
+        }).unwrap();
+
+        assert_eq!(result, vec![
+            RemoteEntry { path: "notes/a.md".into(), mtime: 100.0 },
+            RemoteEntry { path: "notes/b.md".into(), mtime: 200.0 },
+        ]);
+    }
+
+    #[test]
+    fn delete_remote_succeeds_on_200() {
+        let server_url = spawn_mock_response(200, r#"{"status":"deleted"}"#);
+
+        let result = tauri::async_runtime::block_on(async move {
+            let ctx = SyncContext { server_url, ..test_ctx() };
+            delete_remote(&ctx, "notes/a.md").await
+        });
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn delete_remote_treats_404_as_success() {
+        // Already gone server-side -- same end state as a successful
+        // delete, not an error worth surfacing.
+        let server_url = spawn_mock_response(404, "");
+
+        let result = tauri::async_runtime::block_on(async move {
+            let ctx = SyncContext { server_url, ..test_ctx() };
+            delete_remote(&ctx, "notes/a.md").await
+        });
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn resolve_conflict_push_side_local_wins_retries_push_with_server_mtime() {
+        let _guard = crate::json_store::TEST_ENV_GUARD.lock().unwrap();
+        let config_dir = std::env::temp_dir().join(format!("prisma-desktop-test-{}-cfg", uuid::Uuid::new_v4()));
+        std::env::set_var("PRISMA_DESKTOP_CONFIG_DIR", &config_dir);
+
+        let vault_dir = std::env::temp_dir().join(format!("prisma-desktop-test-{}-vault", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(vault_dir.join("notes")).unwrap();
+        let local_path = vault_dir.join("notes/a.md");
+        std::fs::write(&local_path, "local content").unwrap();
+        let local_mtime = std::fs::metadata(&local_path)
+            .and_then(|m| m.modified())
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+
+        // local wins (local_mtime >= server_mtime) -- server_mtime
+        // deliberately far in the past.
+        let server_mtime = 100.0;
+        let server_body = "server content".to_string();
+        // The retry push (with the server's own mtime as expected_mtime)
+        // succeeds this time, reported back as this new mtime. A clean,
+        // exactly-representable literal -- not the real, ultra-precise
+        // filesystem mtime -- avoids hand-formatting a float into this
+        // mock's JSON text via `{}` Display hitting the exact
+        // precision-boundary class of bug this project's own sync
+        // protocol had to fix once already (see sync_routes.py's
+        // _MTIME_TOLERANCE_SECONDS): reqwest/serde_json round-trip a
+        // float exactly, but format!("{}", x) doesn't always reproduce
+        // every significant digit float that Display would need to.
+        let retry_mtime = 555.0;
+        let server_url = spawn_mock_response(200, &format!(r#"{{"body":"ignored","mtime":{retry_mtime}}}"#));
+        let vault_path_for_ctx = vault_dir.clone();
+        let server_body_for_ctx = server_body.clone();
+
+        let ctx = tauri::async_runtime::block_on(async move {
+            let ctx = Arc::new(SyncContext { vault_path: vault_path_for_ctx, server_url, ..test_ctx() });
+            resolve_conflict_push_side(&ctx, "notes/a.md", "local content", server_body_for_ctx, server_mtime).await;
+            ctx
+        });
+
+        std::env::remove_var("PRISMA_DESKTOP_CONFIG_DIR");
+
+        // local content is retained (local won) -- NOT overwritten with the server's
+        assert_eq!(std::fs::read_to_string(&local_path).unwrap(), "local content");
+
+        // the server's now-discarded version is preserved as the conflict copy
+        let conflict_path = vault_dir.join(format!("notes/a.conflict-{}.md", server_mtime as i64));
+        assert!(conflict_path.exists());
+        assert_eq!(std::fs::read_to_string(&conflict_path).unwrap(), server_body);
+
+        // state updated to reflect the successful retry push
+        let state = ctx.state.lock().unwrap();
+        let tracked = state.files.get("notes/a.md").expect("tracked entry for notes/a.md");
+        assert_eq!(tracked.last_synced_mtime, retry_mtime);
+        assert_eq!(tracked.content_hash, content_hash("local content"));
 
         std::fs::remove_dir_all(&vault_dir).ok();
         std::fs::remove_dir_all(&config_dir).ok();
