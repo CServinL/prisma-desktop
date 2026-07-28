@@ -2,6 +2,9 @@
 
 Thin Tauri v2 shell for Prisma on Linux and Windows/WSL2.
 
+Read before modularization/refactoring work:
+- `docs/software-engineering-quality-aspects.md` — rubric to evaluate against (also loaded globally, see `~/.claude/CLAUDE.md`)
+
 The UI source lives in the sibling `prisma/ui/` directory.
 The Python backend lives in the sibling `prisma/` repo (`prisma serve`).
 
