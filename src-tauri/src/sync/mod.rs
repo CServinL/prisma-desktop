@@ -145,9 +145,11 @@ pub struct SyncContext {
 /// any. Silently drops the message when disconnected -- the next
 /// request_manifest on reconnect (see pull.rs) is what actually guarantees
 /// eventual consistency, not this notification.
-pub fn send_ws_message(ctx: &SyncContext, msg: &serde_json::Value) {
+pub fn send_ws_message(ctx: &SyncContext, msg: &impl Serialize) {
     if let Some(tx) = ctx.ws_outbound.lock().unwrap().as_ref() {
-        let _ = tx.send(msg.to_string());
+        if let Ok(text) = serde_json::to_string(msg) {
+            let _ = tx.send(text);
+        }
     }
 }
 

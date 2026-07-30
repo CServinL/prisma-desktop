@@ -31,7 +31,7 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 
-use super::SyncContext;
+use super::{SyncContext, TrackedFile};
 
 #[derive(Deserialize)]
 struct IncomingMessage {
@@ -158,7 +158,7 @@ async fn handle_message(ctx: &Arc<SyncContext>, text: &str) {
                 }
                 Some("sync_write") | Some("save") | Some("create") => {
                     super::mark_suppressed_write(ctx, &path);
-                    let synced = super::manifest::pull_and_write(ctx, &path).await;
+                    let synced = pull_and_write(ctx, &path).await;
                     // ACK: the server doesn't consider a push-down complete
                     // until it hears back that this client actually applied
                     // it (mirrors a network ACK — see this module's own
@@ -175,6 +175,41 @@ async fn handle_message(ctx: &Arc<SyncContext>, text: &str) {
         }
         "ack" => {} // server acknowledging a file_changed/file_deleted notification — nothing to do
         _ => {}
+    }
+}
+
+/// Pulls and writes `rel` locally. Returns `Some((hash, mtime))` on success
+/// so the caller can ack the write back to the server (see the
+/// "vault_change"/"sync_write" handler above) -- the server doesn't
+/// consider a push-down complete until it hears this back. Was previously
+/// in manifest.rs, a module documented as "pure diffing, no I/O" -- this
+/// does real network + fs writes + state mutation, and is only ever called
+/// from this module, so it belongs here.
+async fn pull_and_write(ctx: &Arc<SyncContext>, rel: &str) -> Option<(String, f64)> {
+    match super::pull_file(ctx, rel).await {
+        Ok(Some((body, mtime))) => {
+            let abs = ctx.vault_path.join(rel);
+            if let Some(parent) = abs.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let hash = super::content_hash(&body);
+            if std::fs::write(&abs, &body).is_ok() {
+                let mut state = ctx.state.lock().unwrap();
+                state.files.insert(rel.to_string(), TrackedFile { last_synced_mtime: mtime, content_hash: hash.clone() });
+                super::save_sync_state(&state);
+                return Some((hash, mtime));
+            }
+            None
+        }
+        Ok(None) => {
+            // Deleted server-side between the manifest fetch and this
+            // pull — nothing to write.
+            None
+        }
+        Err(_) => {
+            // Best-effort — a later WS event or reconciliation pass retries.
+            None
+        }
     }
 }
 
@@ -217,10 +252,9 @@ mod tests {
     }
 
     // ── handle_message dispatch ──────────────────────────────────────────
-    // Covers the branches that don't need a live HTTP server
-    // (request_file and vault_change/sync_write both call through to
-    // push_path/pull_and_write, which make real HTTP calls -- left for a
-    // follow-up with an HTTP mock).
+    // Covers the branches that don't need a live HTTP server. request_file
+    // calls through to push_path (its own test coverage lives in push.rs);
+    // pull_and_write is exercised directly below, with a mock HTTP server.
 
     fn ctx_with_channel(vault_path: std::path::PathBuf) -> (Arc<SyncContext>, mpsc::UnboundedReceiver<String>) {
         let (tx, rx) = mpsc::unbounded_channel();
@@ -315,6 +349,88 @@ mod tests {
         tauri::async_runtime::block_on(handle_message(&ctx, "not json at all"));
 
         assert!(rx.try_recv().is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── pull_and_write ────────────────────────────────────────────────────
+    // Previously in manifest.rs with zero coverage -- this module's own
+    // spawn_mock_response (crate::sync::tests) makes it exercisable without
+    // adding a mocking crate as a new dependency, same as push_file/pull_file's
+    // tests in mod.rs.
+
+    #[test]
+    fn pull_and_write_writes_file_and_tracks_state_on_success() {
+        let server_url = crate::sync::tests::spawn_mock_response(200, r#"{"body":"pulled content","mtime":200.0}"#);
+        let dir = std::env::temp_dir().join(format!("prisma-desktop-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("notes")).unwrap();
+        let _guard = crate::json_store::TEST_ENV_GUARD.lock().unwrap();
+        let config_dir = std::env::temp_dir().join(format!("prisma-desktop-test-{}-cfg", uuid::Uuid::new_v4()));
+        std::env::set_var("PRISMA_DESKTOP_CONFIG_DIR", &config_dir);
+
+        let ctx = Arc::new(SyncContext { server_url, vault_path: dir.clone(), ..crate::sync::tests::test_ctx() });
+        let result = tauri::async_runtime::block_on(pull_and_write(&ctx, "notes/a.md"));
+
+        std::env::remove_var("PRISMA_DESKTOP_CONFIG_DIR");
+
+        assert_eq!(result, Some((super::super::content_hash("pulled content"), 200.0)));
+        assert_eq!(std::fs::read_to_string(dir.join("notes/a.md")).unwrap(), "pulled content");
+        let state = ctx.state.lock().unwrap();
+        let tracked = state.files.get("notes/a.md").expect("file should be tracked after pull");
+        assert_eq!(tracked.last_synced_mtime, 200.0);
+        assert_eq!(tracked.content_hash, super::super::content_hash("pulled content"));
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&config_dir).ok();
+    }
+
+    #[test]
+    fn pull_and_write_creates_parent_dirs_for_nested_path() {
+        let server_url = crate::sync::tests::spawn_mock_response(200, r#"{"body":"nested","mtime":100.0}"#);
+        let dir = std::env::temp_dir().join(format!("prisma-desktop-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let _guard = crate::json_store::TEST_ENV_GUARD.lock().unwrap();
+        let config_dir = std::env::temp_dir().join(format!("prisma-desktop-test-{}-cfg", uuid::Uuid::new_v4()));
+        std::env::set_var("PRISMA_DESKTOP_CONFIG_DIR", &config_dir);
+
+        let ctx = Arc::new(SyncContext { server_url, vault_path: dir.clone(), ..crate::sync::tests::test_ctx() });
+        let result = tauri::async_runtime::block_on(pull_and_write(&ctx, "deep/nested/notes/a.md"));
+
+        std::env::remove_var("PRISMA_DESKTOP_CONFIG_DIR");
+
+        assert!(result.is_some());
+        assert!(dir.join("deep/nested/notes/a.md").exists());
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&config_dir).ok();
+    }
+
+    #[test]
+    fn pull_and_write_returns_none_when_deleted_server_side() {
+        // 404: deleted on the server between the manifest fetch and this pull.
+        let server_url = crate::sync::tests::spawn_mock_response(404, "");
+        let dir = std::env::temp_dir().join(format!("prisma-desktop-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let ctx = Arc::new(SyncContext { server_url, vault_path: dir.clone(), ..crate::sync::tests::test_ctx() });
+        let result = tauri::async_runtime::block_on(pull_and_write(&ctx, "notes/gone.md"));
+
+        assert_eq!(result, None);
+        assert!(!dir.join("notes/gone.md").exists());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn pull_and_write_returns_none_on_server_error() {
+        let server_url = crate::sync::tests::spawn_mock_response(500, "");
+        let dir = std::env::temp_dir().join(format!("prisma-desktop-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let ctx = Arc::new(SyncContext { server_url, vault_path: dir.clone(), ..crate::sync::tests::test_ctx() });
+        let result = tauri::async_runtime::block_on(pull_and_write(&ctx, "notes/a.md"));
+
+        assert_eq!(result, None);
+
         std::fs::remove_dir_all(&dir).ok();
     }
 }
