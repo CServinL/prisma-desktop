@@ -1,19 +1,25 @@
 # prisma-desktop
 
-Thin Tauri v2 shell for Prisma on Linux and Windows/WSL2.
+Thin Tauri v2 shell for Prisma on Linux, with native Windows/macOS builds planned once
+that hardware is available to actually build/test against (see TODO.md). WSL2 support
+existed 2025 through 2026-07-30 as a stopgap while the maintainer had no native Linux
+hardware, then was dropped outright once anvil (native Linux) existed — not a supported
+target anymore, and not the same thing as a genuinely native Windows build (that's new
+work, not a port of the WSL-aware code that used to be here).
 
 The UI source lives in the sibling `prisma/ui/` directory.
 The Python backend lives in the sibling `prisma/` repo (`prisma serve`).
 
-Tauri is the "PWA runtime" for Linux/WSL2 — platforms that don't support native PWA install.
+Tauri is the "PWA runtime" for Linux — platforms that don't support native PWA install.
 It opens a native window pointed at `http://127.0.0.1:8766/app` — the Web process
 (served by `prisma serve`'s supervisor; see ADR-012 in the `prisma` repo). REST/WebSocket
 calls go to the separate API process at `:8765` (configurable as "Server URL" in Settings).
-On Android, iOS, and macOS the same URL is used directly in the browser as a PWA.
+On Android, iOS, and macOS the same URL is used directly in the browser as a PWA — that
+PWA path is unaffected by anything above, and lives entirely in the `prisma` repo.
 
 ## What lives here
 
-- `src-tauri/src/settings.rs` / `window.rs` — window management, settings persistence, WSL2-aware URL opener
+- `src-tauri/src/settings.rs` / `window.rs` — window management, settings persistence, URL opener (`xdg-open`, Linux-only for now)
 - `src-tauri/src/auth/` — ADR-011 password-mode login (`sync_login`/`sync_logout`/`sync_status` commands), `auth.json` session store
 - `src-tauri/src/sync/` — vault-sync engine: fs-watcher push (`push.rs`), WebSocket pull (`pull.rs`), initial-reconciliation diff (`manifest.rs`) — see README's "Vault Sync & Auth" section for the design
 - `src-tauri/tauri.conf.json` — window config, CSP, icons
@@ -56,7 +62,7 @@ Diagrams live in `docs/diagrams/`. Include updated HTML files in the PR — revi
 | File | Views | What it shows |
 |------|-------|---------------|
 | `01_system_topology.html` | System topology, UI pipeline | Clients, Tauri internals, server, UI build pipeline |
-| `02_deployment.html` | Deployment, Network | Physical processes (WSL2/Windows) + port/protocol map |
+| `02_deployment.html` | Deployment, Network | Physical processes (Linux desktop, forge, internet) + port/protocol map |
 | `03a_open_stream.html` | — | User opens a research stream (sequence) |
 | `03b_vault_search.html` | — | Fast + deep vault search flows (sequence) |
 | `03c_dev_hot_reload.html` | — | Edit → rebuild → browser reload (sequence) |

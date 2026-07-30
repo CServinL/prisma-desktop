@@ -3,12 +3,13 @@ name: Release
 # Each target platform is its own independent job, not a matrix or a
 # dropdown choice -- flip one on by deleting its `if: false` once you
 # actually have hardware/a runner to build it on, without touching the
-# others. Only Linux x86_64 is real today (this is a Linux/WSL2 app --
-# WSL-aware at runtime, not a separate Windows build). A genuinely native
-# (non-WSL-aware) Windows build is planned but not started; macOS is
-# planned once Apple Silicon hardware is available (also needed for the
-# one-time `tauri ios init`-style bootstrap this repo's iOS work would
-# eventually need, per the now-removed ios.yml's own note).
+# others. Only Linux x86_64 is real today. WSL2 support existed as a
+# stopgap through 2026-07-30 and was then dropped outright (no Windows/WSL2
+# hardware to test against) -- this is a native Linux app now. A genuinely
+# native Windows build is planned but not started; macOS is planned once
+# Apple Silicon hardware is available (also needed for the one-time
+# `tauri ios init`-style bootstrap this repo's iOS work would eventually
+# need, per the now-removed ios.yml's own note).
 
 on:
   workflow_dispatch:
@@ -93,8 +94,9 @@ jobs:
           prerelease: false
           args: --target aarch64-unknown-linux-gnu
 
-  # Disabled: no native (non-WSL) Windows build exists yet -- this is new
-  # work, not a port of the WSL-aware Linux binary.
+  # Disabled: no native Windows build exists yet -- this is new work, not
+  # a port of the Linux binary (WSL2 support, which this would have ported
+  # from, was dropped 2026-07-30).
   release-windows-x86_64:
     if: false
     runs-on: windows-latest

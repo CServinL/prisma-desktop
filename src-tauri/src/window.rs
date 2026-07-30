@@ -32,22 +32,16 @@ pub fn window_close(window: tauri::WebviewWindow) -> Result<(), String> {
     window.close().map_err(|e| e.to_string())
 }
 
+/// Linux-only for now -- WSL2 support dropped 2026-07-30 (no Windows/WSL2
+/// hardware to test against; a genuinely native Windows build, when that
+/// hardware exists, would use a real Windows opener, e.g. reintroducing
+/// tauri-plugin-opener, not this xdg-open call).
 #[tauri::command]
 pub fn open_url(url: String) -> Result<(), String> {
-    let is_wsl = std::fs::read_to_string("/proc/sys/kernel/osrelease")
-        .map(|r| r.to_lowercase().contains("microsoft"))
-        .unwrap_or(false);
-    if is_wsl {
-        std::process::Command::new("explorer.exe")
-            .arg(&url)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-    } else {
-        std::process::Command::new("xdg-open")
-            .arg(&url)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-    }
+    std::process::Command::new("xdg-open")
+        .arg(&url)
+        .spawn()
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 

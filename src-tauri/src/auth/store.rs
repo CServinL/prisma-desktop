@@ -25,9 +25,10 @@ pub fn load_auth_store() -> AuthStore {
 pub fn save_auth_store(store: &AuthStore) {
     // Kept as its own file (not folded into settings.json) and
     // 0600-permissioned — it holds bearer tokens, not just window
-    // geometry. A real OS keyring is skipped deliberately: this project
-    // explicitly targets WSL2, which has no reliable secret-service to
-    // back one.
+    // geometry. A real OS keyring (libsecret/GNOME Keyring, KWallet via
+    // e.g. the `keyring` crate) is skipped for now, not ruled out — WSL2
+    // support (dropped 2026-07-30) was the original reason, since WSL2 has
+    // no reliable secret-service to back one; a native Linux desktop does.
     crate::json_store::save_json(&auth_store_path(), store, true)
 }
 
