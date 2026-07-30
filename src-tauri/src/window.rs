@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::settings::{load_settings, save_settings};
+use crate::settings::{load_settings, save_settings, SETTINGS_LOCK};
 
 #[tauri::command]
 pub fn apply_scale(window: tauri::WebviewWindow, scale: f64) -> Result<(), String> {
@@ -112,6 +112,11 @@ pub fn init_main_window(win: &tauri::WebviewWindow, settings: &crate::settings::
             if current != gen {
                 return;
             }
+            // Held across the whole load-modify-save cycle -- see
+            // SETTINGS_LOCK's doc comment (settings.rs) for why a bare
+            // load_settings() here without it could race save_settings_cmd
+            // and silently lose whichever side's fields lost the race.
+            let _lock = SETTINGS_LOCK.lock().unwrap();
             let mut s = load_settings();
             let maximized = win_save.is_maximized().unwrap_or(false);
             s.window_maximized = Some(maximized);
