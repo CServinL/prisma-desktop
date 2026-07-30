@@ -139,6 +139,17 @@ pub struct SyncContext {
     /// best-effort, matching this tool's existing "offline is normal"
     /// philosophy (see pull::run_pull_loop's reconnect loop).
     pub ws_outbound: Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>,
+    /// Set when the WS handshake is rejected with 401/403 -- the current
+    /// token is invalid/expired and nothing in this engine can refresh it
+    /// on its own: password-mode auth (ADR-011) has no refresh-token
+    /// concept, and this process never stores the password, only the
+    /// token. Previously this looked identical to "server unreachable" --
+    /// run_pull_loop retried forever every RECONNECT_DELAY with the exact
+    /// same doomed token. Cleared on the next successful connection, or
+    /// immediately when sync_login (auth/mod.rs) hands this context a
+    /// fresh token via update_running_token. Exposed via SyncStatusInfo so
+    /// the frontend can tell the two states apart.
+    pub needs_reauth: AtomicBool,
 }
 
 /// Best-effort send of `msg` to the server over the live WS connection, if
@@ -438,6 +449,7 @@ pub(crate) mod tests {
             state: Mutex::new(SyncState::default()),
             suppress_writes: Mutex::new(HashSet::new()),
             ws_outbound: Mutex::new(None),
+            needs_reauth: AtomicBool::new(false),
         }
     }
 
@@ -814,6 +826,7 @@ pub(crate) mod tests {
                 state: Mutex::new(SyncState::default()),
                 suppress_writes: Mutex::new(HashSet::new()),
                 ws_outbound: Mutex::new(None),
+                needs_reauth: AtomicBool::new(false),
             };
 
             let manifest = fetch_manifest(&ctx).await.expect("manifest fetch failed");
@@ -900,6 +913,7 @@ pub(crate) mod tests {
                 state: Mutex::new(SyncState::default()),
                 suppress_writes: Mutex::new(HashSet::new()),
                 ws_outbound: Mutex::new(None),
+                needs_reauth: AtomicBool::new(false),
             };
             let _ = delete_remote(&cleanup_ctx, "notes/_manual_ws_check.md").await;
 
@@ -979,6 +993,7 @@ pub(crate) mod tests {
                 state: Mutex::new(SyncState::default()),
                 suppress_writes: Mutex::new(HashSet::new()),
                 ws_outbound: Mutex::new(None),
+                needs_reauth: AtomicBool::new(false),
             };
             let test_path = "notes/_manual_ws_echo_check.md";
             let _ = delete_remote(&ctx, test_path).await;
@@ -1050,6 +1065,7 @@ pub async fn sync_start(app: tauri::AppHandle) -> Result<(), String> {
         state: Mutex::new(load_sync_state()),
         suppress_writes: Mutex::new(HashSet::new()),
         ws_outbound: Mutex::new(None),
+        needs_reauth: AtomicBool::new(false),
     });
 
     // No client-driven initial reconciliation anymore -- the server asks
@@ -1084,6 +1100,11 @@ pub struct SyncStatusInfo {
     pub server_url: Option<String>,
     pub vault_path: Option<String>,
     pub tracked_files: usize,
+    /// See SyncContext::needs_reauth's doc comment -- true when the running
+    /// engine's WS connection is being rejected as unauthorized (expired or
+    /// invalid token) and needs a fresh sync_login to recover. Always false
+    /// when `running` is false.
+    pub needs_reauth: bool,
 }
 
 #[tauri::command]
@@ -1096,8 +1117,28 @@ pub fn sync_engine_status(app: tauri::AppHandle) -> SyncStatusInfo {
             server_url: Some(handle.ctx.server_url.clone()),
             vault_path: Some(handle.ctx.vault_path.display().to_string()),
             tracked_files: handle.ctx.state.lock().unwrap().files.len(),
+            needs_reauth: handle.ctx.needs_reauth.load(Ordering::SeqCst),
         },
-        None => SyncStatusInfo { running: false, server_url: None, vault_path: None, tracked_files: 0 },
+        None => SyncStatusInfo {
+            running: false, server_url: None, vault_path: None, tracked_files: 0, needs_reauth: false,
+        },
+    }
+}
+
+/// Hands a freshly (re-)authenticated token to the currently running
+/// engine, if any, and only if it's running against the same server that
+/// was just (re-)authenticated -- so sync_login/sync_logout (auth/mod.rs)
+/// take effect immediately on a live connection instead of requiring the
+/// user to stop/restart sync manually. A no-op if no engine is running, or
+/// it's running against a different server_url.
+pub fn update_running_token(app: &tauri::AppHandle, server_url: &str, token: Option<String>) {
+    let state = app.state::<AppState>();
+    let guard = state.engine.lock().unwrap();
+    if let Some(handle) = guard.as_ref() {
+        if handle.ctx.server_url.trim_end_matches('/') == server_url.trim_end_matches('/') {
+            *handle.ctx.token.lock().unwrap() = token;
+            handle.ctx.needs_reauth.store(false, Ordering::SeqCst);
+        }
     }
 }
 
@@ -1132,6 +1173,7 @@ pub async fn sync_diff(app: tauri::AppHandle) -> Result<SyncDiffInfo, String> {
         state: Mutex::new(load_sync_state()),
         suppress_writes: Mutex::new(HashSet::new()),
         ws_outbound: Mutex::new(None),
+        needs_reauth: AtomicBool::new(false),
     };
 
     // Reuse a running engine's live state if there is one — otherwise the
