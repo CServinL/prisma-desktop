@@ -24,8 +24,18 @@ pub struct LoginResult {
 /// the resulting session in auth.json. A no-op-looking success (mode:
 /// none on the server) never reaches this — the server's /auth/login
 /// returns 404 in that case, surfaced here as an Err.
+///
+/// Also hands the fresh token straight to a currently-running sync engine
+/// (if one is running against this same server_url) via
+/// sync::update_running_token -- without this, re-authenticating here only
+/// ever updated the on-disk store, so a connection already stuck in
+/// SyncContext::needs_reauth (see sync/pull.rs) stayed stuck until the user
+/// separately stopped and restarted sync, even though a valid token now
+/// existed. There is no refresh-token concept in this password-mode auth
+/// (ADR-011) and this process never stores the password -- a fresh
+/// sync_login call is the only way a stuck connection recovers at all.
 #[tauri::command]
-pub async fn sync_login(server_url: String, password: String) -> Result<LoginResult, String> {
+pub async fn sync_login(app: tauri::AppHandle, server_url: String, password: String) -> Result<LoginResult, String> {
     let client = reqwest::Client::new();
     let resp = client
         .post(format!("{}/auth/login", server_url.trim_end_matches('/')))
@@ -45,12 +55,18 @@ pub async fn sync_login(server_url: String, password: String) -> Result<LoginRes
         &server_url,
         StoredSession { token: body.token.clone(), expires_at: body.expires_at.clone() },
     );
+    crate::sync::update_running_token(&app, &server_url, Some(body.token.clone()));
     Ok(LoginResult { token: body.token, expires_at: body.expires_at })
 }
 
+/// Also clears a running engine's live token for this server (see
+/// sync_login's doc comment) -- otherwise an explicit logout leaves a
+/// currently-running connection still authenticated with a token the user
+/// just chose to invalidate client-side.
 #[tauri::command]
-pub fn sync_logout(server_url: String) -> Result<(), String> {
+pub fn sync_logout(app: tauri::AppHandle, server_url: String) -> Result<(), String> {
     store::clear_session(&server_url);
+    crate::sync::update_running_token(&app, &server_url, None);
     Ok(())
 }
 

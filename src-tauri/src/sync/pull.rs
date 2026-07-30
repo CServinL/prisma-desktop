@@ -43,16 +43,54 @@ struct IncomingMessage {
 
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
 
+/// Distinguishes "the token was rejected" from every other connection
+/// failure. Previously both looked identical -- run_pull_loop retried
+/// every RECONNECT_DELAY with the exact same doomed token forever, with no
+/// way for anything (logs, the frontend) to tell "server unreachable" apart
+/// from "please log in again."
+enum ConnectError {
+    Unauthorized,
+    Other(String),
+}
+
+impl From<String> for ConnectError {
+    fn from(s: String) -> Self {
+        ConnectError::Other(s)
+    }
+}
+
+impl std::fmt::Display for ConnectError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConnectError::Unauthorized => write!(f, "unauthorized (401/403) -- token expired or invalid"),
+            ConnectError::Other(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 pub async fn run_pull_loop(ctx: Arc<SyncContext>, stop: Arc<AtomicBool>) {
     while !stop.load(Ordering::SeqCst) {
-        if let Err(err) = connect_and_listen(&ctx, &stop).await {
-            // Logged (not just silently retried) so a genuinely broken
-            // connection -- as opposed to ordinary offline/unreachable --
-            // is at least diagnosable from stdout/journal. Confirmed live
-            // 2026-07-26: a missing TLS backend produced the exact same
-            // silent-forever-retry symptom as being offline, and was only
-            // found by adding this logging back temporarily.
-            eprintln!("prisma-desktop sync: WS connection to {} failed: {err}", ctx.server_url);
+        match connect_and_listen(&ctx, &stop).await {
+            Ok(()) => {}
+            Err(ConnectError::Unauthorized) => {
+                // ctx.needs_reauth is already set by connect_and_listen
+                // itself, right where the rejection is detected -- this arm
+                // only logs it.
+                eprintln!(
+                    "prisma-desktop sync: WS connection to {} rejected as unauthorized -- \
+                     waiting for re-login",
+                    ctx.server_url
+                );
+            }
+            Err(err @ ConnectError::Other(_)) => {
+                // Logged (not just silently retried) so a genuinely broken
+                // connection -- as opposed to ordinary offline/unreachable --
+                // is at least diagnosable from stdout/journal. Confirmed live
+                // 2026-07-26: a missing TLS backend produced the exact same
+                // silent-forever-retry symptom as being offline, and was only
+                // found by adding this logging back temporarily.
+                eprintln!("prisma-desktop sync: WS connection to {} failed: {err}", ctx.server_url);
+            }
         }
         *ctx.ws_outbound.lock().unwrap() = None;
         if stop.load(Ordering::SeqCst) {
@@ -62,7 +100,7 @@ pub async fn run_pull_loop(ctx: Arc<SyncContext>, stop: Arc<AtomicBool>) {
     }
 }
 
-async fn connect_and_listen(ctx: &Arc<SyncContext>, stop: &Arc<AtomicBool>) -> Result<(), String> {
+async fn connect_and_listen(ctx: &Arc<SyncContext>, stop: &Arc<AtomicBool>) -> Result<(), ConnectError> {
     let ws_url = to_ws_url(&ctx.server_url, &ctx.client_id);
     let mut request = ws_url.clone().into_client_request().map_err(|e| e.to_string())?;
 
@@ -78,9 +116,27 @@ async fn connect_and_listen(ctx: &Arc<SyncContext>, stop: &Arc<AtomicBool>) -> R
         );
     }
 
-    let (ws_stream, _response) = tokio_tungstenite::connect_async(request)
-        .await
-        .map_err(|e| e.to_string())?;
+    let (ws_stream, _response) = tokio_tungstenite::connect_async(request).await.map_err(|e| {
+        // The server rejects the WS upgrade with a plain HTTP 401/403
+        // (AuthMiddleware, matching every other authenticated endpoint) --
+        // Error::Http carries that response when the handshake gets a
+        // non-101 status back, distinct from every other failure mode
+        // (DNS, refused connection, TLS, a dropped stream mid-handshake).
+        if let tokio_tungstenite::tungstenite::Error::Http(resp) = &e {
+            let status = resp.status().as_u16();
+            if status == 401 || status == 403 {
+                // Set here, at the point of detection, so this function is
+                // fully self-contained regarding the flag's true/false
+                // transitions -- run_pull_loop only logs it.
+                ctx.needs_reauth.store(true, Ordering::SeqCst);
+                return ConnectError::Unauthorized;
+            }
+        }
+        ConnectError::Other(e.to_string())
+    })?;
+    // A live connection proves the token just worked -- clear any stale
+    // "needs re-login" state from a previous rejected attempt.
+    ctx.needs_reauth.store(false, Ordering::SeqCst);
     let (mut write, mut read) = ws_stream.split();
 
     // Give the fs watcher (and anything else) a way to send messages over
@@ -98,7 +154,7 @@ async fn connect_and_listen(ctx: &Arc<SyncContext>, stop: &Arc<AtomicBool>) -> R
                     Some(Ok(Message::Text(text))) => handle_message(ctx, &text).await,
                     Some(Ok(Message::Close(_))) | None => return Ok(()),
                     Some(Ok(_)) => {} // ping/pong/binary — nothing to do
-                    Some(Err(e)) => return Err(e.to_string()),
+                    Some(Err(e)) => return Err(ConnectError::Other(e.to_string())),
                 }
             }
             outgoing = rx.recv() => {
@@ -432,5 +488,53 @@ mod tests {
         assert_eq!(result, None);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── connect_and_listen: 401/403 detection ────────────────────────────
+    // spawn_mock_response speaks plain HTTP, not a real WS upgrade -- but
+    // that's exactly what's needed here: tokio-tungstenite treats any
+    // non-101 response to the handshake request as Error::Http, regardless
+    // of whether the server understands WebSocket at all, so a bare "here's
+    // a 401" mock is a faithful stand-in for the real AuthMiddleware
+    // rejection this is meant to catch.
+
+    #[test]
+    fn connect_and_listen_sets_needs_reauth_on_401() {
+        let server_url = crate::sync::tests::spawn_mock_response(401, "");
+        let ctx = Arc::new(SyncContext { server_url, ..crate::sync::tests::test_ctx() });
+        let stop = Arc::new(AtomicBool::new(false));
+
+        let result = tauri::async_runtime::block_on(connect_and_listen(&ctx, &stop));
+
+        assert!(matches!(result, Err(ConnectError::Unauthorized)));
+        assert!(ctx.needs_reauth.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn connect_and_listen_sets_needs_reauth_on_403() {
+        let server_url = crate::sync::tests::spawn_mock_response(403, "");
+        let ctx = Arc::new(SyncContext { server_url, ..crate::sync::tests::test_ctx() });
+        let stop = Arc::new(AtomicBool::new(false));
+
+        let result = tauri::async_runtime::block_on(connect_and_listen(&ctx, &stop));
+
+        assert!(matches!(result, Err(ConnectError::Unauthorized)));
+        assert!(ctx.needs_reauth.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn connect_and_listen_does_not_set_needs_reauth_on_other_errors() {
+        // A 500 (or any other non-2xx/101 status, or a connection that
+        // never even reaches an HTTP response) is a generic failure, not an
+        // auth rejection -- must not be misdiagnosed as "please log in
+        // again" when the real problem is e.g. the server being down.
+        let server_url = crate::sync::tests::spawn_mock_response(500, "");
+        let ctx = Arc::new(SyncContext { server_url, ..crate::sync::tests::test_ctx() });
+        let stop = Arc::new(AtomicBool::new(false));
+
+        let result = tauri::async_runtime::block_on(connect_and_listen(&ctx, &stop));
+
+        assert!(matches!(result, Err(ConnectError::Other(_))));
+        assert!(!ctx.needs_reauth.load(Ordering::SeqCst));
     }
 }
