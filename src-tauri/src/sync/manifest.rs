@@ -4,12 +4,14 @@
 //! pull.rs's module doc comment) -- the server orchestrates that now via
 //! request_manifest. `build_manifest` is what actually feeds that: a full
 //! local walk with a content hash per file, sent to the server on request.
+//! Pure diffing/building only -- no network, no fs writes beyond the read
+//! side of the walk (see pull.rs::pull_and_write for the network+write half
+//! this module used to also hold).
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
-use std::sync::Arc;
 
-use super::{relative_md_path, SyncContext, TrackedFile};
+use super::{relative_md_path, TrackedFile};
 
 /// Same tolerance as sync_routes.py's `_MTIME_TOLERANCE_SECONDS`. Exact `==`
 /// on Unix-timestamp-magnitude f64s (~1.78e9 at this scale) can fail after a
@@ -317,37 +319,5 @@ mod tests {
                 ReconcileAction::PushNew("notes/new-local.md".into()),
             ]
         );
-    }
-}
-
-/// Pulls and writes `rel` locally. Returns `Some((hash, mtime))` on success
-/// so the caller can ack the write back to the server (see pull.rs's
-/// "vault_change"/"sync_write" handler) -- the server doesn't consider a
-/// push-down complete until it hears this back.
-pub async fn pull_and_write(ctx: &Arc<SyncContext>, rel: &str) -> Option<(String, f64)> {
-    match super::pull_file(ctx, rel).await {
-        Ok(Some((body, mtime))) => {
-            let abs = ctx.vault_path.join(rel);
-            if let Some(parent) = abs.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            let hash = super::content_hash(&body);
-            if std::fs::write(&abs, &body).is_ok() {
-                let mut state = ctx.state.lock().unwrap();
-                state.files.insert(rel.to_string(), TrackedFile { last_synced_mtime: mtime, content_hash: hash.clone() });
-                super::save_sync_state(&state);
-                return Some((hash, mtime));
-            }
-            None
-        }
-        Ok(None) => {
-            // Deleted server-side between the manifest fetch and this
-            // pull — nothing to write.
-            None
-        }
-        Err(_) => {
-            // Best-effort — a later WS event or reconciliation pass retries.
-            None
-        }
     }
 }

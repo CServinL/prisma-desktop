@@ -16,7 +16,23 @@ use std::time::Duration;
 use notify::RecursiveMode;
 use notify_debouncer_full::{new_debouncer, DebounceEventResult, Debouncer, RecommendedCache};
 
+use super::manifest::ManifestFileEntry;
 use super::{relative_md_path, PushError, SyncContext, TrackedFile};
+
+/// Wraps a ManifestFileEntry with the "type" field the WS protocol needs --
+/// #[serde(flatten)] merges path/hash/mtime/size alongside it, producing
+/// the exact same {"type":"file_changed","path":...,"hash":...,"mtime":...,
+/// "size":...} shape this used to build by hand with serde_json::json!(),
+/// but now sharing ManifestFileEntry's one definition of "how a file is
+/// described" with manifest.rs::build_manifest instead of a second,
+/// independently-typed copy of the same four fields.
+#[derive(serde::Serialize)]
+struct FileChangedMessage<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    #[serde(flatten)]
+    entry: &'a ManifestFileEntry,
+}
 
 pub type WatcherHandle = Debouncer<notify::RecommendedWatcher, RecommendedCache>;
 
@@ -75,12 +91,8 @@ async fn notify_change(ctx: &Arc<SyncContext>, rel: &str) {
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs_f64())
             .unwrap_or(0.0);
-        super::send_ws_message(
-            ctx,
-            &serde_json::json!({
-                "type": "file_changed", "path": rel, "hash": hash, "mtime": mtime, "size": meta.len(),
-            }),
-        );
+        let entry = ManifestFileEntry { path: rel.to_string(), hash, mtime, size: meta.len() };
+        super::send_ws_message(ctx, &FileChangedMessage { kind: "file_changed", entry: &entry });
     } else {
         let was_tracked = ctx.state.lock().unwrap().files.contains_key(rel);
         if !was_tracked {
