@@ -14,7 +14,7 @@ OUT = Path(__file__).with_suffix(".html")
 # ── View 1: System topology ────────────────────────────────────────────────────
 top = SystemMap(title="prisma-desktop — system topology")
 
-top.group("Desktop",     color="#6366f1", label="Linux / WSL2 desktop")
+top.group("Desktop",     color="#6366f1", label="Linux desktop")
 top.group("Mobile",      color="#8b5cf6", label="Mobile / Mac (PWA)")
 top.group("TauriRust",   color="#ef4444", label="Tauri Rust shell (src-tauri/)")
 top.group("Server",      color="#0ea5e9", label="prisma serve (:8765)")
@@ -26,7 +26,7 @@ top.add_component("pwa_ios",      label="PWA (iOS/Mac)",   layer="clients",  gro
 
 top.add_component("window_mgmt",  label="Window mgmt",     layer="tauri",    group="TauriRust", tech="create / resize / minimize / drag")
 top.add_component("settings",     label="Settings store",  layer="tauri",    group="TauriRust", tech="~/.config/prisma-desktop/settings.json")
-top.add_component("url_opener",   label="URL opener",      layer="tauri",    group="TauriRust", tech="WSL2-aware: explorer.exe / xdg-open")
+top.add_component("url_opener",   label="URL opener",      layer="tauri",    group="TauriRust", tech="Linux: xdg-open")
 
 top.add_component("fastapi",      label="FastAPI",         layer="server",   group="Server",    tech=":8765")
 top.add_component("ui_static",    label="Static /app",     layer="server",   group="Server",    tech="ui/build/ via StaticFiles")

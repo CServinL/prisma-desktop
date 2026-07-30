@@ -22,8 +22,8 @@ The Python backend (`prisma serve`) runs as an HTTP server, by default at `local
 # terminal 1 — backend
 cd ../prisma && .venv/bin/prisma serve
 
-# terminal 2 — desktop (WSLg: ensure DISPLAY=:0; PATH prefix only needed if
-# cargo came from rustup rather than a system package)
+# terminal 2 — desktop (PATH prefix only needed if cargo came from rustup
+# rather than a system package)
 PATH="$HOME/.cargo/bin:$PATH" cargo tauri dev
 ```
 
