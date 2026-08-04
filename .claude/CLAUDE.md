@@ -7,6 +7,9 @@ hardware, then was dropped outright once anvil (native Linux) existed — not a 
 target anymore, and not the same thing as a genuinely native Windows build (that's new
 work, not a port of the WSL-aware code that used to be here).
 
+Read before modularization/refactoring work:
+- `docs/software-engineering-quality-aspects.md` — rubric to evaluate against (also loaded globally, see `~/.claude/CLAUDE.md`)
+
 The UI source lives in the sibling `prisma/ui/` directory.
 The Python backend lives in the sibling `prisma/` repo (`prisma serve`).
 
