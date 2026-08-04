@@ -1,5 +1,14 @@
 name: Release
 
+# Two stages per platform, not one: `build-*` compiles and uploads the
+# bundle as a workflow artifact (no GitHub Release interaction at all --
+# tauri-action skips all release handling when tagName/releaseName/releaseId
+# are omitted). A single `publish` job, gated on every build job, downloads
+# every artifact and creates the actual GitHub Release in one place. If
+# publish fails (e.g. a permissions issue), `gh run rerun --failed` re-runs
+# just that job and reuses every build's already-uploaded output -- no
+# multi-minute Rust recompile just because the cheap last step broke.
+#
 # Each target platform is its own independent job, not a matrix or a
 # dropdown choice -- flip one on by deleting its `if: false` once you
 # actually have hardware/a runner to build it on, without touching the
@@ -20,7 +29,7 @@ on:
         type: string
 
 jobs:
-  release-linux-x86_64:
+  build-linux-x86_64:
     runs-on: ubuntu-22.04
 
     steps:
@@ -43,22 +52,20 @@ jobs:
             librsvg2-dev \
             patchelf
 
+      # No tagName/releaseName/releaseId -- build only, no release touched.
       - uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/upload-artifact@v4
         with:
-          tagName: ${{ inputs.tag }}
-          releaseName: "Prisma Desktop ${{ inputs.tag }} (linux-x86_64)"
-          releaseBody: |
-            See the [CHANGELOG](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
-          releaseDraft: true
-          prerelease: false
+          name: linux-x86_64
+          path: src-tauri/target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
 
   # Disabled: no ARM Linux hardware to build on yet. Runner label as of
   # 2026-07 is ubuntu-22.04-arm/ubuntu-24.04-arm -- verify it's still
   # correct (GitHub's hosted-ARM-runner naming has changed before) when
   # enabling this.
-  release-linux-arm64:
+  build-linux-arm64:
     if: false
     runs-on: ubuntu-22.04-arm
 
@@ -83,21 +90,19 @@ jobs:
             patchelf
 
       - uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ inputs.tag }}
-          releaseName: "Prisma Desktop ${{ inputs.tag }} (linux-arm64)"
-          releaseBody: |
-            See the [CHANGELOG](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
-          releaseDraft: true
-          prerelease: false
           args: --target aarch64-unknown-linux-gnu
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-arm64
+          path: src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
 
   # Disabled: no native Windows build exists yet -- this is new work, not
   # a port of the Linux binary (WSL2 support, which this would have ported
   # from, was dropped 2026-07-30).
-  release-windows-x86_64:
+  build-windows-x86_64:
     if: false
     runs-on: windows-latest
 
@@ -113,20 +118,19 @@ jobs:
           workspaces: src-tauri
 
       - uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: ${{ inputs.tag }}
-          releaseName: "Prisma Desktop ${{ inputs.tag }} (windows-x86_64)"
-          releaseBody: |
-            See the [CHANGELOG](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
-          releaseDraft: true
-          prerelease: false
 
-  # Disabled: same as release-windows-x86_64, plus GitHub's hosted
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64
+          path: |
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+
+  # Disabled: same as build-windows-x86_64, plus GitHub's hosted
   # Windows-ARM runner (windows-11-arm as of 2026-07) may still be limited
   # availability -- verify when enabling.
-  release-windows-arm64:
+  build-windows-arm64:
     if: false
     runs-on: windows-11-arm
 
@@ -142,19 +146,19 @@ jobs:
           workspaces: src-tauri
 
       - uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ inputs.tag }}
-          releaseName: "Prisma Desktop ${{ inputs.tag }} (windows-arm64)"
-          releaseBody: |
-            See the [CHANGELOG](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
-          releaseDraft: true
-          prerelease: false
           args: --target aarch64-pc-windows-msvc
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-arm64
+          path: |
+            src-tauri/target/aarch64-pc-windows-msvc/release/bundle/msi/*.msi
+            src-tauri/target/aarch64-pc-windows-msvc/release/bundle/nsis/*.exe
+          if-no-files-found: error
+
   # Disabled until Apple Silicon hardware is available.
-  release-macos-arm64:
+  build-macos-arm64:
     if: false
     runs-on: macos-14
 
@@ -170,13 +174,38 @@ jobs:
           workspaces: src-tauri
 
       - uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ inputs.tag }}
-          releaseName: "Prisma Desktop ${{ inputs.tag }} (macos-arm64)"
-          releaseBody: |
-            See the [CHANGELOG](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
-          releaseDraft: true
-          prerelease: false
           args: --target aarch64-apple-darwin
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64
+          path: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+  publish:
+    needs:
+      - build-linux-x86_64
+      # Disabled build jobs above aren't listed here -- `needs` on a
+      # skipped/disabled job blocks the whole workflow. Add each one back
+      # here as it's turned on.
+    runs-on: ubuntu-22.04
+    permissions:
+      # tauri-action's build-only jobs above never touch this -- only this
+      # job needs write access, and only for creating the Release itself.
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          name: "Prisma Desktop ${{ inputs.tag }}"
+          body: |
+            See the [CHANGELOG](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
+          draft: true
+          prerelease: false
+          files: dist/*/*
