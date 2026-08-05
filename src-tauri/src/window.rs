@@ -1,35 +1,100 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::settings::{load_settings, save_settings, SETTINGS_LOCK};
+use crate::settings::{load_settings, save_settings, Settings, SETTINGS_LOCK};
+
+const FALLBACK_HTML: &str = include_str!("../fallback.html");
+
+/// The fallback page's own scheme, registered in lib.rs's Builder via
+/// `.register_uri_scheme_protocol`. Not file:// -- a file:// page's Origin
+/// is `null`/unparseable, which broke `invoke()` at call time ("Origin
+/// header is not a valid URL", found live). A registered custom scheme
+/// gets a real, valid origin (`fallback://localhost/` on Linux, per
+/// tauri::Builder::register_uri_scheme_protocol's own docs), which
+/// `invoke()` needs.
+pub const FALLBACK_SCHEME: &str = "fallback";
+
+/// Renders the fallback page's HTML with the current hostname/TLS/ports
+/// baked in for display/prefill -- called both by resolve_start_url (to
+/// decide the window's target URL) and by the registered protocol handler
+/// in lib.rs (to actually serve that content when the webview requests it).
+pub fn render_fallback_html(settings: &Settings) -> String {
+    FALLBACK_HTML
+        .replace("{{HOSTNAME}}", &settings.hostname)
+        .replace("{{TLS_CHECKED_BOOL}}", if settings.tls { "true" } else { "false" })
+        .replace("{{API_PORT}}", &settings.api_port.to_string())
+        .replace("{{WEB_PORT}}", &settings.web_port.to_string())
+}
+
+/// GET {api_url}/health (prisma's own health route, see prisma/server/app.py)
+/// with a short timeout -- an unreachable/down server must not hang app
+/// startup waiting on a connection that's never coming.
+fn is_server_reachable(api_url: &str) -> bool {
+    let Ok(client) = reqwest::Client::builder().timeout(Duration::from_secs(3)).build() else {
+        return false;
+    };
+    let url = format!("{}/health", api_url.trim_end_matches('/'));
+    tauri::async_runtime::block_on(async move {
+        client.get(&url).send().await.map(|r| r.status().is_success()).unwrap_or(false)
+    })
+}
+
+fn fallback_url() -> tauri::Url {
+    tauri::Url::parse(&format!("{FALLBACK_SCHEME}://localhost/"))
+        .expect("scheme://localhost/ is always a valid URL")
+}
+
+fn app_url(settings: &Settings) -> Option<tauri::Url> {
+    let mut url = tauri::Url::parse(&settings.web_url()).ok()?;
+    url.set_path("/app");
+    Some(url)
+}
+
+/// The URL the main window should load right now: the real server's UI if
+/// its API is reachable, the embedded fallback page (with a way to
+/// reconfigure and retry) if not.
+pub fn resolve_start_url(settings: &Settings) -> tauri::Url {
+    if is_server_reachable(&settings.api_url()) {
+        app_url(settings).unwrap_or_else(fallback_url)
+    } else {
+        fallback_url()
+    }
+}
+
+/// Called from the fallback page's "Conectar" button (see fallback.html).
+/// Saves the new hostname/tls/ports (same merge-preserving path
+/// save_settings_cmd uses for window geometry) and, if reachable, navigates
+/// the window there directly rather than returning true and making the JS
+/// side re-navigate -- one fewer round trip.
+#[tauri::command]
+pub fn try_connect(
+    window: tauri::WebviewWindow,
+    hostname: String,
+    tls: bool,
+    api_port: u16,
+    web_port: u16,
+) -> Result<bool, String> {
+    let mut s = load_settings();
+    s.hostname = hostname.clone();
+    s.tls = tls;
+    s.api_port = api_port;
+    s.web_port = web_port;
+
+    if !is_server_reachable(&s.api_url()) {
+        return Ok(false);
+    }
+    {
+        let _lock = SETTINGS_LOCK.lock().unwrap();
+        save_settings(&s);
+    }
+    let target = app_url(&s).ok_or_else(|| format!("invalid hostname: {hostname}"))?;
+    window.navigate(target).map_err(|e| e.to_string())?;
+    Ok(true)
+}
 
 #[tauri::command]
 pub fn apply_scale(window: tauri::WebviewWindow, scale: f64) -> Result<(), String> {
     window.set_zoom(scale).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn window_start_drag(window: tauri::WebviewWindow) -> Result<(), String> {
-    window.start_dragging().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn window_minimize(window: tauri::WebviewWindow) -> Result<(), String> {
-    window.minimize().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn window_toggle_maximize(window: tauri::WebviewWindow) -> Result<(), String> {
-    if window.is_maximized().map_err(|e| e.to_string())? {
-        window.unmaximize().map_err(|e| e.to_string())
-    } else {
-        window.maximize().map_err(|e| e.to_string())
-    }
-}
-
-#[tauri::command]
-pub fn window_close(window: tauri::WebviewWindow) -> Result<(), String> {
-    window.close().map_err(|e| e.to_string())
 }
 
 /// Linux-only for now -- WSL2 support dropped 2026-07-30 (no Windows/WSL2
@@ -127,4 +192,70 @@ pub fn init_main_window(win: &tauri::WebviewWindow, settings: &crate::settings::
             save_settings(&s);
         });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_server_reachable_returns_false_for_a_closed_port_without_hanging() {
+        // Port 1 is privileged/never listening in any test environment --
+        // a real connection-refused case, exercising the same "unreachable"
+        // path a genuinely down prisma serve would hit. The 3s client
+        // timeout bounds this test's worst case.
+        assert!(!is_server_reachable("http://127.0.0.1:1"));
+    }
+
+    #[test]
+    fn render_fallback_html_embeds_hostname_and_ports() {
+        let mut s = Settings::default();
+        s.hostname = "example.test".into();
+        s.api_port = 1234;
+        s.web_port = 5678;
+        let html = render_fallback_html(&s);
+        assert!(html.contains("example.test"));
+        assert!(html.contains("1234"));
+        assert!(html.contains("5678"));
+        assert!(!html.contains("{{HOSTNAME}}"));
+        assert!(!html.contains("{{API_PORT}}"));
+        assert!(!html.contains("{{WEB_PORT}}"));
+        assert!(!html.contains("{{TLS_CHECKED_BOOL}}"));
+    }
+
+    #[test]
+    fn resolve_start_url_falls_back_to_the_fallback_scheme_when_server_unreachable() {
+        let mut s = Settings::default();
+        s.api_port = 1; // never listening, see is_server_reachable's own test
+        let url = resolve_start_url(&s);
+        assert_eq!(url.scheme(), FALLBACK_SCHEME);
+    }
+
+    #[test]
+    fn app_url_uses_http_and_the_web_port_when_tls_is_false() {
+        let mut s = Settings::default();
+        s.hostname = "127.0.0.1".into();
+        s.tls = false;
+        s.web_port = 8766;
+        let url = app_url(&s).unwrap();
+        assert_eq!(url.scheme(), "http");
+        assert_eq!(url.port(), Some(8766));
+        assert_eq!(url.path(), "/app");
+    }
+
+    #[test]
+    fn app_url_uses_https_when_tls_is_true() {
+        let mut s = Settings::default();
+        s.hostname = "prisma.example.internal".into();
+        s.tls = true;
+        s.web_port = 443;
+        let url = app_url(&s).unwrap();
+        assert_eq!(url.scheme(), "https");
+        assert_eq!(url.host_str(), Some("prisma.example.internal"));
+        // url crate omits the port from .port() when it's the scheme's
+        // default (443 for https) -- port_or_known_default() always returns
+        // a value.
+        assert_eq!(url.port_or_known_default(), Some(443));
+        assert_eq!(url.path(), "/app");
+    }
 }
