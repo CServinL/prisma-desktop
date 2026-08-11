@@ -8,20 +8,21 @@
     "frontendDist": "http://127.0.0.1:8766/app"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "title": "Prisma",
-        "url": "http://127.0.0.1:8766/app",
+        "url": "about:blank",
         "width": 1280,
         "height": 800,
         "minWidth": 800,
         "minHeight": 500,
-        "decorations": false,
-        "transparent": true
+        "decorations": true,
+        "transparent": false
       }
     ],
     "security": {
-      "csp": "default-src 'self' http://127.0.0.1:8766; script-src 'self' 'unsafe-inline' http://127.0.0.1:8766; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost http: https: ws: wss:; img-src 'self' data: http: https:; frame-src http: https:"
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost http: https: ws: wss:; img-src 'self' data: http: https:; frame-src http: https:"
     }
   },
   "bundle": {

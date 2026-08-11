@@ -46,10 +46,28 @@ pub fn content_hash(body: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-#[derive(Serialize, Deserialize, Clone, Default)]
+/// See settings.rs's SETTINGS_SCHEMA_VERSION for the convention this
+/// mirrors. No real migration needed yet.
+pub const SYNC_STATE_SCHEMA_VERSION: u32 = 1;
+
+fn sync_state_migration_chain() -> crate::schema_gov::MigrationChain {
+    crate::schema_gov::MigrationChain { current_version: SYNC_STATE_SCHEMA_VERSION, migrations: HashMap::new() }
+}
+
+fn default_schema_version() -> u32 { 1 }
+
+#[derive(Serialize, Deserialize, Clone)]
 pub struct SyncState {
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
     pub client_id: Option<String>,
     pub files: HashMap<String, TrackedFile>,
+}
+
+impl Default for SyncState {
+    fn default() -> Self {
+        Self { schema_version: SYNC_STATE_SCHEMA_VERSION, client_id: None, files: HashMap::new() }
+    }
 }
 
 fn sync_state_path() -> PathBuf {
@@ -57,7 +75,7 @@ fn sync_state_path() -> PathBuf {
 }
 
 pub fn load_sync_state() -> SyncState {
-    crate::json_store::load_json(&sync_state_path())
+    crate::json_store::load_json(&sync_state_path(), &sync_state_migration_chain())
 }
 
 pub fn save_sync_state(state: &SyncState) {
@@ -789,6 +807,31 @@ pub(crate) mod tests {
         assert!(consume_suppressed_write(&ctx, "notes/a.md"));
     }
 
+    #[test]
+    fn detect_same_filesystem_returns_false_and_cleans_up_when_server_unreachable() {
+        let dir = std::env::temp_dir().join(format!("prisma-desktop-test-{}-fsprobe", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let http = reqwest::Client::new();
+        // Port 1 is privileged/never listening in any test environment --
+        // same "real connection-refused case" convention as window.rs's
+        // is_server_reachable test.
+        let same_fs = tauri::async_runtime::block_on(detect_same_filesystem(&http, "http://127.0.0.1:1", &dir));
+
+        assert!(!same_fs);
+        let leftover: Vec<_> = std::fs::read_dir(&dir).unwrap().collect();
+        assert!(leftover.is_empty(), "probe file was not cleaned up: {leftover:?}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn server_vault_root_returns_none_when_server_unreachable() {
+        let http = reqwest::Client::new();
+        let root = tauri::async_runtime::block_on(server_vault_root(&http, "http://127.0.0.1:1"));
+        assert_eq!(root, None);
+    }
+
     /// Manual, one-off check against a REAL running `prisma serve`
     /// (server.auth.mode: password) — not part of the automated suite.
     /// Exercises the actual wire format (JSON field names, header names,
@@ -1036,6 +1079,51 @@ pub struct AppState {
     engine: Mutex<Option<EngineHandle>>,
 }
 
+/// Fetches the server's own reported vault root (GET /status's vault.root,
+/// see prisma's SystemStatusResponse) -- used only as the cheap first half
+/// of the same-filesystem check below. None on any failure (unreachable,
+/// bad JSON, etc.) -- callers treat that as "can't confirm a collision",
+/// never as a reason to block starting sync.
+async fn server_vault_root(http: &reqwest::Client, server_url: &str) -> Option<String> {
+    let resp = http.get(format!("{server_url}/status")).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let json: serde_json::Value = resp.json().await.ok()?;
+    json.get("vault")?.get("root")?.as_str().map(str::to_string)
+}
+
+/// The deeper check `isLoopbackUrl` (prisma/ui/src/lib/sync.ts) alone
+/// misses: a hostname that isn't 127.0.0.1/localhost but still routes back
+/// to this same machine (a LAN hostname, a router hairpin, etc.) would
+/// otherwise start a vault-sync engine that pushes/pulls a directory
+/// against itself. Writes a random marker file straight to local disk
+/// (bypassing the sync protocol entirely, so no push has happened yet) and
+/// asks the server to read that exact path back over /sync/file: if it's
+/// the same filesystem the server sees it immediately with zero network
+/// sync involved; if not, /sync/file 404s -- a fresh random UUID filename
+/// can't coincidentally already exist on a genuinely different vault.
+/// Always cleans up the marker file itself.
+async fn detect_same_filesystem(http: &reqwest::Client, server_url: &str, vault_path: &Path) -> bool {
+    let probe_name = format!(".prisma-desktop-fs-probe-{}.md", uuid::Uuid::new_v4());
+    let probe_path = vault_path.join(&probe_name);
+
+    if std::fs::write(&probe_path, "fs-identity-probe").is_err() {
+        return false;
+    }
+
+    let same_fs = http
+        .get(format!("{server_url}/sync/file"))
+        .query(&[("path", probe_name.as_str())])
+        .send()
+        .await
+        .ok()
+        .is_some_and(|r| r.status().is_success());
+
+    let _ = std::fs::remove_file(&probe_path);
+    same_fs
+}
+
 /// Starts syncing using whatever's currently configured in Settings
 /// (server_url, vault_path — falling back to the default data-dir location
 /// per settings::resolve_vault_path if unset), same "sensible default,
@@ -1051,14 +1139,31 @@ pub async fn sync_start(app: tauri::AppHandle) -> Result<(), String> {
     }
 
     let settings = crate::settings::load_settings();
-    let server_url = settings.server_url.clone();
+    let server_url = settings.api_url();
+    let server_url = server_url.trim_end_matches('/').to_string();
     let vault_path = crate::settings::resolve_vault_path(&settings);
     std::fs::create_dir_all(&vault_path).map_err(|e| e.to_string())?;
 
+    let http = reqwest::Client::new();
+    // Cheap string check first (isLoopbackUrl already screens out the
+    // obvious 127.0.0.1 case in TS -- this covers a non-loopback hostname
+    // that still happens to route back to this same machine); the
+    // network+disk round trip in detect_same_filesystem only runs if the
+    // paths already coincide, which should be rare.
+    if let Some(remote_root) = server_vault_root(&http, &server_url).await {
+        if remote_root == vault_path.display().to_string()
+            && detect_same_filesystem(&http, &server_url, &vault_path).await
+        {
+            return Err(format!(
+                "refusing to sync: the server's vault root ({remote_root}) looks like the same physical filesystem as this machine's local vault folder -- syncing would push and pull the same files against themselves. If this really is a separate server, point \"Local vault folder\" at a different path."
+            ));
+        }
+    }
+
     let token = crate::auth::session_for(&server_url).map(|s| s.token);
     let ctx = Arc::new(SyncContext {
-        http: reqwest::Client::new(),
-        server_url: server_url.trim_end_matches('/').to_string(),
+        http,
+        server_url: server_url.clone(),
         vault_path,
         client_id: client_id(),
         token: Mutex::new(token),
@@ -1160,7 +1265,7 @@ pub struct SyncDiffInfo {
 #[tauri::command]
 pub async fn sync_diff(app: tauri::AppHandle) -> Result<SyncDiffInfo, String> {
     let settings = crate::settings::load_settings();
-    let server_url = settings.server_url.trim_end_matches('/').to_string();
+    let server_url = settings.api_url();
     let vault_path = crate::settings::resolve_vault_path(&settings);
 
     let token = crate::auth::session_for(&server_url).map(|s| s.token);
