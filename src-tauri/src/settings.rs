@@ -1,6 +1,20 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
+
+use crate::schema_gov::MigrationChain;
+
+/// Bumped whenever Settings' shape changes in a way `#[serde(default)]`
+/// alone can't handle (a rename, a type change) -- add the real migration
+/// step to settings_migration_chain() at the same time. No real migration
+/// has ever been needed yet; this is the same "infrastructure ready, chain
+/// starts empty" posture prisma's Python schema_gov had before its first one.
+pub const SETTINGS_SCHEMA_VERSION: u32 = 1;
+
+fn settings_migration_chain() -> MigrationChain {
+    MigrationChain { current_version: SETTINGS_SCHEMA_VERSION, migrations: HashMap::new() }
+}
 
 /// Guards every load-modify-save cycle against settings.json -- both
 /// save_settings_cmd (below) and window.rs's debounced resize/move handler
@@ -12,6 +26,13 @@ use serde::{Deserialize, Serialize};
 /// both low-frequency, user-triggered-or-debounced writes, not a hot path.
 pub(crate) static SETTINGS_LOCK: Mutex<()> = Mutex::new(());
 
+// Used by serde when deserializing a pre-versioning file with no
+// schema_version key at all -- SETTINGS_SCHEMA_VERSION itself is what
+// MigrationChain::migrate() stamps onto the JSON before this ever runs, in
+// the normal load_settings() path; this default only matters for a struct
+// literal built directly from JSON some other way.
+fn default_schema_version() -> u32 { 1 }
+
 fn default_hostname() -> String { "127.0.0.1".into() }
 fn default_api_port() -> u16 { 8765 }
 fn default_web_port() -> u16 { 8766 }
@@ -21,6 +42,8 @@ fn default_sidebar_width() -> u32 { 220 }
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Settings {
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
     pub scale: f64,
     #[serde(default = "default_hostname")]
     pub hostname: String,
@@ -65,6 +88,10 @@ impl Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            // A fresh, no-file-yet Settings represents the CURRENT shape,
+            // not v1 -- distinct from default_schema_version() above, which
+            // only applies when deserializing an old file missing the key.
+            schema_version: SETTINGS_SCHEMA_VERSION,
             // 1x reads as uncomfortably small on today's typical high-density
             // displays (confirmed live on a 4K monitor) — 1.5x is a more
             // usable out-of-the-box default for a fresh install with no
@@ -90,7 +117,7 @@ pub fn settings_path() -> PathBuf {
 }
 
 pub fn load_settings() -> Settings {
-    crate::json_store::load_json(&settings_path())
+    crate::json_store::load_json(&settings_path(), &settings_migration_chain())
 }
 
 pub fn save_settings(s: &Settings) {

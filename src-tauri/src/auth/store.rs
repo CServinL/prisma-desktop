@@ -3,15 +3,35 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::schema_gov::MigrationChain;
+
+/// See settings.rs's SETTINGS_SCHEMA_VERSION for the convention this
+/// mirrors. No real migration needed yet.
+pub const AUTH_STORE_SCHEMA_VERSION: u32 = 1;
+
+fn auth_store_migration_chain() -> MigrationChain {
+    MigrationChain { current_version: AUTH_STORE_SCHEMA_VERSION, migrations: HashMap::new() }
+}
+
+fn default_schema_version() -> u32 { 1 }
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct StoredSession {
     pub token: String,
     pub expires_at: String,
 }
 
-#[derive(Serialize, Deserialize, Clone, Default)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct AuthStore {
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
     pub sessions: HashMap<String, StoredSession>,
+}
+
+impl Default for AuthStore {
+    fn default() -> Self {
+        Self { schema_version: AUTH_STORE_SCHEMA_VERSION, sessions: HashMap::new() }
+    }
 }
 
 fn auth_store_path() -> PathBuf {
@@ -19,7 +39,7 @@ fn auth_store_path() -> PathBuf {
 }
 
 pub fn load_auth_store() -> AuthStore {
-    crate::json_store::load_json(&auth_store_path())
+    crate::json_store::load_json(&auth_store_path(), &auth_store_migration_chain())
 }
 
 pub fn save_auth_store(store: &AuthStore) {

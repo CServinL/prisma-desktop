@@ -5,6 +5,10 @@
 use jsonschema::validator_for;
 use serde_json::Value;
 
+// Not wired to a caller yet -- see mod.rs's doc comment (no JSON Schema
+// source of truth for Settings/AuthStore/SyncState exists to validate
+// against today).
+#[allow(dead_code)]
 pub fn validate_against_schema(schema: &Value, instance: &Value) -> Result<(), Vec<String>> {
     let validator = validator_for(schema).map_err(|e| vec![e.to_string()])?;
     let errors: Vec<String> = validator.iter_errors(instance).map(|e| e.to_string()).collect();

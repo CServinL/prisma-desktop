@@ -46,10 +46,28 @@ pub fn content_hash(body: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-#[derive(Serialize, Deserialize, Clone, Default)]
+/// See settings.rs's SETTINGS_SCHEMA_VERSION for the convention this
+/// mirrors. No real migration needed yet.
+pub const SYNC_STATE_SCHEMA_VERSION: u32 = 1;
+
+fn sync_state_migration_chain() -> crate::schema_gov::MigrationChain {
+    crate::schema_gov::MigrationChain { current_version: SYNC_STATE_SCHEMA_VERSION, migrations: HashMap::new() }
+}
+
+fn default_schema_version() -> u32 { 1 }
+
+#[derive(Serialize, Deserialize, Clone)]
 pub struct SyncState {
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
     pub client_id: Option<String>,
     pub files: HashMap<String, TrackedFile>,
+}
+
+impl Default for SyncState {
+    fn default() -> Self {
+        Self { schema_version: SYNC_STATE_SCHEMA_VERSION, client_id: None, files: HashMap::new() }
+    }
 }
 
 fn sync_state_path() -> PathBuf {
@@ -57,7 +75,7 @@ fn sync_state_path() -> PathBuf {
 }
 
 pub fn load_sync_state() -> SyncState {
-    crate::json_store::load_json(&sync_state_path())
+    crate::json_store::load_json(&sync_state_path(), &sync_state_migration_chain())
 }
 
 pub fn save_sync_state(state: &SyncState) {
