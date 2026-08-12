@@ -4,10 +4,11 @@
   "description": "Capability for the main window",
   "windows": ["main"],
   "remote": {
-    "urls": ["http://*/**", "https://*/**"]
+    "urls": ["http://*:*/**", "https://*:*/**"]
   },
   "permissions": [
     "core:default",
-    "dialog:allow-open"
+    "dialog:allow-open",
+    "allow-app-commands"
   ]
 }

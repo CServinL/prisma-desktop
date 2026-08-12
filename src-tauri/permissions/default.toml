@@ -1,0 +1,26 @@
+[[permission]]
+identifier = "allow-app-commands"
+description = """
+This app's own commands (settings, window, vault-sync). Local-origin
+content gets these implicitly, but a window navigated to a remote URL
+(see capabilities/default.json's `remote.urls`, needed for the
+dual api_port/web_port model against a LAN server) does not -- without
+this permission every invoke() from that page fails with
+"<command> not allowed. Plugin not found", regardless of the remote
+origin being allow-listed.
+"""
+commands.allow = [
+  "get_settings",
+  "save_settings_cmd",
+  "pick_vault_folder",
+  "apply_scale",
+  "open_url",
+  "sync_login",
+  "sync_logout",
+  "sync_status",
+  "sync_start",
+  "sync_stop",
+  "sync_engine_status",
+  "sync_diff",
+  "try_connect",
+]
