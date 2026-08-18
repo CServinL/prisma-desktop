@@ -61,25 +61,6 @@ pub fn resolve_start_url(settings: &Settings) -> tauri::Url {
     }
 }
 
-/// devUrl (tauri.conf.json, compiled in) picks which page a dev-mode window
-/// loads; settings.json's hostname/api_port (read live, see settings.rs)
-/// picks where that page's own API/WebSocket calls go -- two independent
-/// values nothing keeps in sync. Neither is wrong on its own (ADR-012:
-/// apiBase pointing at a different origin than the page is deliberate,
-/// supported behavior) -- this only flags the case where they've silently
-/// drifted apart in a dev session, which is easy to not notice.
-pub fn dev_host_mismatch_warning(dev_url: &tauri::Url, hostname: &str) -> Option<String> {
-    if dev_url.host_str() == Some(hostname) {
-        return None;
-    }
-    Some(format!(
-        "[prisma-desktop] warning: devUrl host ({:?}) != settings.json hostname ({:?}) -- \
-         this window will load devUrl's page, but API/WebSocket calls go to settings.json's \
-         host. If that's not what you want, edit ~/.config/prisma-desktop/settings.json too.",
-        dev_url.host_str(), hostname,
-    ))
-}
-
 /// Called from the fallback page's "Conectar" button (see fallback.html).
 /// Saves the new hostname/tls/ports (same merge-preserving path
 /// save_settings_cmd uses for window geometry) and, if reachable, navigates
@@ -248,20 +229,6 @@ mod tests {
         s.api_port = 1; // never listening, see is_server_reachable's own test
         let url = resolve_start_url(&s);
         assert_eq!(url.scheme(), FALLBACK_SCHEME);
-    }
-
-    #[test]
-    fn dev_host_mismatch_warning_none_when_hosts_match() {
-        let url = tauri::Url::parse("http://127.0.0.1:8766/app").unwrap();
-        assert!(dev_host_mismatch_warning(&url, "127.0.0.1").is_none());
-    }
-
-    #[test]
-    fn dev_host_mismatch_warning_some_when_hosts_differ() {
-        let url = tauri::Url::parse("http://127.0.0.1:8766/app").unwrap();
-        let warning = dev_host_mismatch_warning(&url, "prisma.forge.internal").unwrap();
-        assert!(warning.contains("127.0.0.1"));
-        assert!(warning.contains("prisma.forge.internal"));
     }
 
     #[test]
