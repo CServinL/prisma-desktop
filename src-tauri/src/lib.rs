@@ -9,8 +9,8 @@ use tauri::Manager;
 
 use settings::{get_settings, load_settings, pick_vault_folder, save_settings_cmd};
 use window::{
-    apply_scale, init_main_window, open_url, render_fallback_html, resolve_start_url, try_connect,
-    FALLBACK_SCHEME,
+    apply_scale, dev_host_mismatch_warning, init_main_window, open_url, render_fallback_html,
+    resolve_start_url, try_connect, FALLBACK_SCHEME,
 };
 use auth::{sync_login, sync_logout, sync_status};
 use sync::{sync_diff, sync_engine_status, sync_start, sync_stop, AppState};
@@ -56,6 +56,10 @@ pub fn run() {
                 if !tauri::is_dev() {
                     let start_url = resolve_start_url(&settings);
                     let _ = win.navigate(start_url);
+                } else if let Some(dev_url) = app.config().build.dev_url.as_ref() {
+                    if let Some(warning) = dev_host_mismatch_warning(dev_url, &settings.hostname) {
+                        eprintln!("{warning}");
+                    }
                 }
             }
             Ok(())

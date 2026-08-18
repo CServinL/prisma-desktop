@@ -42,6 +42,15 @@ PATH="$HOME/.cargo/bin:$PATH" cargo tauri dev
 
 The Tauri shell loads `http://127.0.0.1:8766/app` — no Vite dev server needed.
 
+**Two independent configs point at "which server," and dev mode doesn't sync them:**
+
+| Config | File | Read when | Controls |
+|---|---|---|---|
+| `devUrl` | `src-tauri/tauri.conf.json` | compile time (baked into the binary — Tauri's whole config, incl. permissions/CSP, is compiled in by design) | which page `cargo tauri dev` loads |
+| `hostname`/`api_port`/`web_port` | `~/.config/prisma-desktop/settings.json` | runtime, on every `get_settings` call | where the *loaded page's own JS* sends REST/WebSocket calls (`apiUrl()`, `prisma/ui/src/lib/platform.ts`) |
+
+Neither is wrong on its own — apiBase pointing at a different origin than the page is deliberate, supported behavior (ADR-012 in the `prisma` repo: lets Settings point the same binary at a different server without a rebuild). But nothing keeps them in sync, so editing one without the other silently half-works: the window loads from one host while every API call goes to another. To point a dev session fully at one server (local or remote), edit **both**. `cargo tauri dev` prints a warning to the terminal at startup if they disagree (`window::dev_host_mismatch_warning`).
+
 ## Building the UI
 
 ```bash
