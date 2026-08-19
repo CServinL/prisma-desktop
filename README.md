@@ -2,7 +2,14 @@
 
 Tauri v2 + SvelteKit desktop UI for the [Prisma](https://github.com/CServinL/prisma) research assistant.
 
-The Python backend (`prisma serve`) runs as an HTTP server, by default at `localhost:8765`. The SvelteKit frontend calls it directly for all data (notes, chat, search, streams) — still no Rust proxy in that path. The Rust shell does now own one background piece: an optional vault-sync engine (see below) that keeps a local `.md` copy of the vault in sync with a remote server over the LAN, for when `prisma serve` runs on a separate machine.
+The Python backend (`prisma serve`) is a small supervisor that runs the API, Web UI, ChromaDB,
+and knowledge-graph module as independent processes (ADR-012 in the `prisma` repo) —
+by default: API at `localhost:8765`, Web (the built SvelteKit UI, what this window actually
+loads) at `:8766`, ChromaDB at `:8767`. The SvelteKit frontend calls the API directly for all
+data (notes, chat, search, streams) — still no Rust proxy in that path. The Rust shell does now
+own one background piece: an optional vault-sync engine (see below) that keeps a local `.md`
+copy of the vault in sync with a remote server over the LAN, for when `prisma serve` runs on a
+separate machine.
 
 ---
 
@@ -37,7 +44,7 @@ First Rust compile takes ~10 minutes. Subsequent builds are incremental.
 |-------|------------|------|
 | UI | SvelteKit + TypeScript | All user-facing views |
 | Shell | Tauri v2 (Rust) | Window, tray, OS integration, vault-sync engine |
-| Backend | Python FastAPI (`prisma serve`) | Vault, search, Graphify, ChromaDB, Zotero, auth |
+| Backend | Python FastAPI, supervised multi-process (`prisma serve`, ADR-012) | Vault, search, native knowledge graph (Kùzu-backed, no third-party dependency), ChromaDB, Zotero, auth |
 
 The server URL is user-configurable in the toolbar and persisted in `localStorage`
 (browser/PWA) or `settings.json` (Tauri).
@@ -68,8 +75,8 @@ persistent local filesystem to sync into, and continues to talk to the
 server directly, same as before.
 
 Reaching a server across the LAN is gated by the server's own ADR-011
-password-mode auth (`server.auth.mode: password` in the server's
-`config.yaml`) — the login screen shown when a 401 is hit calls the
+password-mode auth (`server.auth.mode = "password"` in the server's
+`config.toml`) — the login screen shown when a 401 is hit calls the
 `sync_login` Tauri command, which stores the session for both the sync
 engine and the SvelteKit UI's own API calls from one password prompt.
 
@@ -79,8 +86,8 @@ engine and the SvelteKit UI's own API calls from one password prompt.
 
 The toolbar status popover shows live health from `GET /status`:
 
-- **Config** — whether `config.yaml` loads without errors
-- **Graphify** — knowledge graph index state and last indexed time
+- **Config** — whether `config.toml` loads without errors
+- **Knowledge graph** — native (Kùzu-backed) index state and last indexed time
 - **Chroma** — ChromaDB chunk count, files indexed, embedding model
 - **Vault** — note/source/chat/stream counts and vault root
 - **Zotero** — connection mode and availability
