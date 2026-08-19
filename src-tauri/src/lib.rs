@@ -47,16 +47,17 @@ pub fn run() {
         .setup(move |app| {
             if let Some(win) = app.get_webview_window("main") {
                 init_main_window(&win, &settings);
-                // `tauri dev` already loads devUrl correctly on its own --
-                // navigating here too was clobbering it with
-                // {settings.server_url}/app regardless of devUrl, breaking
-                // `cargo tauri dev` (found live: hit the API port's /app,
-                // a real 404, instead of the web port devUrl already had
-                // loaded). Only override for an actual installed/run binary.
-                if !tauri::is_dev() {
-                    let start_url = resolve_start_url(&settings);
-                    let _ = win.navigate(start_url);
-                }
+                // Same path in dev and production: settings.json is the
+                // only source of truth for which server this window talks
+                // to. devUrl (tauri.conf.json) is just the placeholder
+                // `cargo tauri dev` shows for an instant before this
+                // navigate() replaces it -- its value no longer matters.
+                // (Previously gated behind `!tauri::is_dev()`, working
+                // around an app_url() bug that used the wrong port; fixed
+                // together with this gate's original commit, but the gate
+                // itself was never removed afterward.)
+                let start_url = resolve_start_url(&settings);
+                let _ = win.navigate(start_url);
             }
             Ok(())
         })

@@ -40,7 +40,17 @@ cd ../prisma
 PATH="$HOME/.cargo/bin:$PATH" cargo tauri dev
 ```
 
-The Tauri shell loads `http://127.0.0.1:8766/app` — no Vite dev server needed.
+`~/.config/prisma-desktop/settings.json` (`hostname`/`tls`/`api_port`/`web_port`) is the **only**
+config that decides which server the window talks to — same in dev and production. On every
+startup, `.setup()` calls `resolve_start_url(&settings)`: pings that server's `/health`, navigates
+to its `/app` if reachable, or shows the built-in fallback/reconnect page (`fallback.html`, the
+"Conectar" form) if not. To point a dev session at a different server, edit `settings.json` (or
+use the fallback page's own form) — nothing else to keep in sync.
+
+`devUrl` (`src-tauri/tauri.conf.json`) is compiled into the binary (Tauri's whole config, incl.
+permissions/CSP, is baked in by design) and only matters for the instant before the `.setup()`
+navigate() above replaces it — `cargo tauri dev` needs *some* valid URL there to have something to
+show first, but its value has no effect on which server the app actually ends up talking to.
 
 ## Building the UI
 
