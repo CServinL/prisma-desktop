@@ -61,31 +61,36 @@
 </head>
 <body>
   <div class="box">
-    <h1>Prisma server no está corriendo</h1>
-    <p>No se pudo conectar a <code id="current-target"></code>. Verifica los datos del servidor o revisa que esté corriendo.</p>
+    <h1 id="heading">Prisma server is not running</h1>
+    <p id="message">Could not connect to <code id="current-target"></code>. Check the server details or make sure it's running.</p>
 
-    <div class="field">
+    <div class="field" id="hostname-field">
       <label for="hostname">Hostname</label>
       <input id="hostname" type="text" />
     </div>
 
-    <div class="tls-row">
+    <div class="tls-row" id="tls-row">
       <input id="tls" type="checkbox" />
       <label for="tls">TLS / SSL (https)</label>
     </div>
 
-    <div class="ports">
+    <div class="ports" id="ports-row">
       <div class="field">
-        <label for="api-port">Puerto API</label>
+        <label for="api-port">API port</label>
         <input id="api-port" type="number" min="1" max="65535" />
       </div>
       <div class="field">
-        <label for="web-port">Puerto Web</label>
+        <label for="web-port">Web port</label>
         <input id="web-port" type="number" min="1" max="65535" />
       </div>
     </div>
 
-    <button id="connect-btn">Conectar</button>
+    <div class="field" id="password-field" style="display: none;">
+      <label for="password">Password</label>
+      <input id="password" type="password" autofocus />
+    </div>
+
+    <button id="connect-btn">Connect</button>
     <div id="status"></div>
   </div>
   <script>
@@ -95,14 +100,31 @@
     const tlsInput = document.getElementById("tls");
     const apiPortInput = document.getElementById("api-port");
     const webPortInput = document.getElementById("web-port");
+    const passwordInput = document.getElementById("password");
 
     hostnameInput.value = "{{HOSTNAME}}";
     tlsInput.checked = {{TLS_CHECKED_BOOL}};
     apiPortInput.value = "{{API_PORT}}";
     webPortInput.value = "{{WEB_PORT}}";
 
-    document.getElementById("current-target").textContent =
-      `${hostnameInput.value}:${apiPortInput.value}`;
+    // A dead-session landing (server reachable, /auth/refresh rejected the
+    // stored token -- see resolve_start_url in window.rs) reuses this same
+    // page but needs a password, not a different host/port -- the hostname
+    // fields are already correct and shouldn't invite editing them.
+    const needsLogin = {{NEEDS_LOGIN_BOOL}};
+    if (needsLogin) {
+      document.getElementById("heading").textContent = "Session expired";
+      document.getElementById("message").textContent =
+        "The server is still running, but the saved session is no longer valid. Enter the password again.";
+      document.getElementById("hostname-field").style.display = "none";
+      document.getElementById("tls-row").style.display = "none";
+      document.getElementById("ports-row").style.display = "none";
+      document.getElementById("password-field").style.display = "block";
+      passwordInput.focus();
+    } else {
+      document.getElementById("current-target").textContent =
+        `${hostnameInput.value}:${apiPortInput.value}`;
+    }
 
     const btn = document.getElementById("connect-btn");
     const status = document.getElementById("status");
@@ -114,13 +136,15 @@
       const apiPort = parseInt(apiPortInput.value, 10);
       const webPort = parseInt(webPortInput.value, 10);
       if (!apiPort || !webPort) return;
+      const password = passwordInput.value || null;
+      if (needsLogin && !password) return;
 
       btn.disabled = true;
-      status.textContent = "Conectando...";
+      status.textContent = needsLogin ? "Signing in…" : "Connecting…";
       try {
-        const ok = await invoke("try_connect", { hostname, tls, apiPort, webPort });
+        const ok = await invoke("try_connect", { hostname, tls, apiPort, webPort, password });
         if (!ok) {
-          status.textContent = "No se pudo conectar a ese servidor.";
+          status.textContent = "Could not connect to that server.";
           btn.disabled = false;
         }
         // On success the Rust side navigates this window away itself --
