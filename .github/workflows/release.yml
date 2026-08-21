@@ -55,6 +55,38 @@ jobs:
       # No tagName/releaseName/releaseId -- build only, no release touched.
       - uses: tauri-apps/tauri-action@v0
 
+      # linuxdeploy bundles libwayland-client (and the glib family pinning
+      # it) against the build host's Mesa, which breaks eglGetDisplay() at
+      # runtime on any host with a newer Mesa -- no excludeLibraries option
+      # exists upstream yet (tauri-apps/tauri#15665). The system's own
+      # copies are drop-in compatible, so strip the bundled ones and
+      # repackage.
+      - name: Strip over-bundled infra libs from the AppImage and repackage
+        env:
+          # appimagetool is itself an AppImage requiring FUSE to mount --
+          # GitHub's runners have no FUSE device, so this makes it (and any
+          # AppImage it produces) fall back to extract-and-run instead.
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          set -euo pipefail
+          cd src-tauri/target/release/bundle/appimage
+          APPIMAGE=$(ls *.AppImage)
+          chmod +x "$APPIMAGE"
+          ./"$APPIMAGE" --appimage-extract >/dev/null
+          rm -f squashfs-root/usr/lib/lib{wayland-client,wayland-cursor,wayland-egl,wayland-server}.so* \
+                squashfs-root/usr/lib/lib{glib-2.0,gio-2.0,gobject-2.0,gmodule-2.0}.so* \
+                squashfs-root/usr/lib/libgst*.so* \
+                squashfs-root/usr/lib/lib{mount,blkid,selinux,pcre2-8,zstd,elf,ffi}.so*
+          wget -q -O appimagetool https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          # AppImageKit's own bundled runtime dlopens libfuse.so.2
+          # unconditionally, which distros shipping only libfuse3 don't
+          # have -- type2-runtime's runtime needs no host libfuse at all.
+          wget -q -O runtime-x86_64 https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64
+          chmod +x appimagetool runtime-x86_64
+          rm -f "$APPIMAGE"
+          ARCH=x86_64 ./appimagetool --no-appstream --runtime-file runtime-x86_64 squashfs-root "$APPIMAGE"
+          rm -rf squashfs-root appimagetool runtime-x86_64
+
       - uses: actions/upload-artifact@v4
         with:
           name: linux-x86_64
