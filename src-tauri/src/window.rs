@@ -14,16 +14,28 @@ const FALLBACK_HTML: &str = include_str!("../fallback.html");
 /// `invoke()` needs.
 pub const FALLBACK_SCHEME: &str = "fallback";
 
+/// Set by resolve_start_url right before it returns the fallback URL for
+/// the "server is reachable but the stored session is dead" case (as
+/// opposed to "server unreachable at all") -- the registered URI scheme
+/// handler in lib.rs renders fallback.html from a plain closure with no
+/// request context of its own to carry that distinction through, so it
+/// reads this instead. Process-wide by design, same reasoning as
+/// SETTINGS_LOCK: exactly one main window, exactly one fallback page live
+/// at a time.
+pub static FALLBACK_NEEDS_LOGIN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Renders the fallback page's HTML with the current hostname/TLS/ports
 /// baked in for display/prefill -- called both by resolve_start_url (to
 /// decide the window's target URL) and by the registered protocol handler
 /// in lib.rs (to actually serve that content when the webview requests it).
 pub fn render_fallback_html(settings: &Settings) -> String {
+    let needs_login = FALLBACK_NEEDS_LOGIN.load(std::sync::atomic::Ordering::SeqCst);
     FALLBACK_HTML
         .replace("{{HOSTNAME}}", &settings.hostname)
         .replace("{{TLS_CHECKED_BOOL}}", if settings.tls { "true" } else { "false" })
         .replace("{{API_PORT}}", &settings.api_port.to_string())
         .replace("{{WEB_PORT}}", &settings.web_port.to_string())
+        .replace("{{NEEDS_LOGIN_BOOL}}", if needs_login { "true" } else { "false" })
 }
 
 /// GET {api_url}/health (prisma's own health route, see prisma/server/app.py)
@@ -51,13 +63,24 @@ fn app_url(settings: &Settings) -> Option<tauri::Url> {
 }
 
 /// The URL the main window should load right now: the real server's UI if
-/// its API is reachable, the embedded fallback page (with a way to
-/// reconfigure and retry) if not.
+/// its API is reachable AND (when a session is stored for it) that session
+/// still slides forward via /auth/refresh, the embedded fallback page (with
+/// a way to reconfigure and retry, or log in again) otherwise. A server
+/// unreachable at all takes priority over the auth check -- no point
+/// distinguishing "dead session" from "dead server" when neither lets the
+/// app load anyway, and only the former should ever clear a stored session.
 pub fn resolve_start_url(settings: &Settings) -> tauri::Url {
-    if is_server_reachable(&settings.api_url()) {
-        app_url(settings).unwrap_or_else(fallback_url)
-    } else {
-        fallback_url()
+    if !is_server_reachable(&settings.api_url()) {
+        FALLBACK_NEEDS_LOGIN.store(false, std::sync::atomic::Ordering::SeqCst);
+        return fallback_url();
+    }
+    match crate::auth::check_and_refresh_session(&settings.api_url()) {
+        crate::auth::AuthCheckOutcome::Dead => {
+            FALLBACK_NEEDS_LOGIN.store(true, std::sync::atomic::Ordering::SeqCst);
+            fallback_url()
+        }
+        crate::auth::AuthCheckOutcome::NoSessionStored
+        | crate::auth::AuthCheckOutcome::Refreshed => app_url(settings).unwrap_or_else(fallback_url),
     }
 }
 
@@ -66,13 +89,22 @@ pub fn resolve_start_url(settings: &Settings) -> tauri::Url {
 /// save_settings_cmd uses for window geometry) and, if reachable, navigates
 /// the window there directly rather than returning true and making the JS
 /// side re-navigate -- one fewer round trip.
+///
+/// `password` is `Some` when the fallback page is showing its
+/// FALLBACK_NEEDS_LOGIN variant (a dead session on an otherwise-reachable
+/// server, not a from-scratch reconnect) -- logging in here, before
+/// navigating, is what makes that variant actually recover instead of just
+/// landing back on /app with no session and repeating the exact failure
+/// that routed here in the first place (see resolve_start_url above).
 #[tauri::command]
-pub fn try_connect(
+pub async fn try_connect(
     window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
     hostname: String,
     tls: bool,
     api_port: u16,
     web_port: u16,
+    password: Option<String>,
 ) -> Result<bool, String> {
     let mut s = load_settings();
     s.hostname = hostname.clone();
@@ -83,6 +115,11 @@ pub fn try_connect(
     if !is_server_reachable(&s.api_url()) {
         return Ok(false);
     }
+
+    if let Some(password) = password.filter(|p| !p.is_empty()) {
+        crate::auth::sync_login(app, s.api_url(), password).await?;
+    }
+
     {
         let _lock = SETTINGS_LOCK.lock().unwrap();
         save_settings(&s);
