@@ -138,10 +138,23 @@ pub fn apply_scale(window: tauri::WebviewWindow, scale: f64) -> Result<(), Strin
 /// hardware to test against; a genuinely native Windows build, when that
 /// hardware exists, would use a real Windows opener, e.g. reintroducing
 /// tauri-plugin-opener, not this xdg-open call).
+///
+/// When running as an AppImage, the runtime prepends its own bundled lib
+/// dirs to LD_LIBRARY_PATH before exec'ing us, and that env is inherited by
+/// every child process we spawn -- including xdg-open and whatever handler
+/// it execs (e.g. the real `zotero` binary for a zotero:// URI). Loading
+/// AppImage-bundled shared libraries into an unrelated host binary breaks
+/// it silently: no attached terminal, so the crash/failure is invisible and
+/// the button just appears to do nothing (confirmed live -- the exact same
+/// zotero:// link opens Zotero fine from a plain browser tab, whose
+/// xdg-open child never inherits this pollution). Clearing it for this one
+/// child process's own subtree restores the normal system environment
+/// xdg-open and its target app expect.
 #[tauri::command]
 pub fn open_url(url: String) -> Result<(), String> {
     std::process::Command::new("xdg-open")
         .arg(&url)
+        .env_remove("LD_LIBRARY_PATH")
         .spawn()
         .map_err(|e| e.to_string())?;
     Ok(())
