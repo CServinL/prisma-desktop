@@ -37,7 +37,14 @@ pub struct LoginResult {
 /// sync_login call, same as a session that was never established at all.
 #[tauri::command]
 pub async fn sync_login(app: tauri::AppHandle, server_url: String, password: String) -> Result<LoginResult, String> {
-    let client = reqwest::Client::new();
+    // reqwest::Client::new() has no request timeout by default -- see
+    // sync/mod.rs's build_http_client() for the live incident (2026-08-27)
+    // that surfaced this same gap in sync's own client. 5s matches
+    // check_and_refresh_session below, the other auth call in this file.
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| e.to_string())?;
     let resp = client
         .post(format!("{}/auth/login", server_url.trim_end_matches('/')))
         .json(&serde_json::json!({ "password": password }))
