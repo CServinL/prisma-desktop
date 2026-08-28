@@ -144,27 +144,29 @@ pub fn relative_md_path(vault_path: &Path, abs_path: &Path) -> Option<String> {
 /// default, so a request whose TCP connection is accepted but never
 /// answered (a pod dying mid-request during a rolling deploy is the
 /// concrete case that surfaced this, 2026-08-27) hangs the awaiting task
-/// forever, not just until some retry logic gives up. `pull.rs`'s
-/// run_pull_loop already retries a *failed* connection every
-/// RECONNECT_DELAY -- this is what makes sure a request can actually fail
-/// in the first place, instead of a whole sync-engine tokio task (and
-/// every other task competing for the same worker threads) sitting stuck
-/// at 0% CPU with nothing to show for it, not even the app's own UI
-/// reload working. auth::sync_login had the same gap independently.
+/// forever: the request future simply never resolves, with nothing to make
+/// it fail so `pull.rs`'s run_pull_loop retry logic ever gets a turn.
+/// (Whether/how that alone explains the full app freeze observed
+/// alongside it -- including the UI's own reload -- wasn't established;
+/// treat this as the concrete, confirmed half of that incident, not a
+/// complete root-cause account of every symptom.) auth::sync_login had
+/// the same gap independently.
 const HTTP_CLIENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-fn build_http_client() -> reqwest::Client {
+fn build_http_client() -> Result<reqwest::Client, String> {
     build_http_client_with_timeout(HTTP_CLIENT_TIMEOUT)
 }
 
 /// Split out from build_http_client() so a test can exercise the actual
 /// timeout mechanism against a short duration instead of waiting out the
-/// real 30s production value.
-fn build_http_client_with_timeout(timeout: std::time::Duration) -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(timeout)
-        .build()
-        .expect("reqwest client should build (see pull.rs's own note on a missing TLS backend -- a real, previously-seen failure mode for this exact call, not hypothetical)")
+/// real 30s production value. Returns Result rather than panicking on a
+/// build failure (e.g. a missing TLS backend -- pull.rs's own doc comment
+/// notes this is a real, previously-seen failure mode for this exact
+/// call, not hypothetical) -- sync_start already returns Result, so a
+/// construction failure can surface to the UI as an ordinary error
+/// instead of crashing the app.
+fn build_http_client_with_timeout(timeout: std::time::Duration) -> Result<reqwest::Client, String> {
+    reqwest::Client::builder().timeout(timeout).build().map_err(|e| e.to_string())
 }
 
 pub struct SyncContext {
@@ -568,23 +570,32 @@ pub(crate) mod tests {
         let addr = listener.local_addr().unwrap();
         let accept_listener = listener.try_clone().unwrap();
         std::thread::spawn(move || {
-            let _ = accept_listener.accept(); // hold the connection open, write nothing, ever
-            std::thread::sleep(std::time::Duration::from_secs(60));
+            // The accepted TcpStream must stay bound to a live variable for
+            // the sleep below -- `let _ = accept_listener.accept();` looked
+            // equivalent but drops the stream immediately (closing the
+            // connection right away, TCP FIN/RST), which produced a
+            // hyper::Error(IncompleteMessage) almost instantly instead of
+            // an actual timeout -- caught by this test itself first
+            // asserting is_timeout() rather than a bare is_err().
+            if let Ok((_stream, _)) = accept_listener.accept() {
+                std::thread::sleep(std::time::Duration::from_secs(60)); // hold it open, write nothing, ever
+            }
         });
         (format!("http://{addr}"), listener)
     }
 
     #[test]
     fn build_http_client_times_out_on_a_connection_that_never_responds() {
-        // Confirmed live 2026-08-27: the desktop app froze completely --
-        // even UI reload stopped working -- after several rolling restarts
-        // of the prisma server it syncs against. Root cause: reqwest::
-        // Client::new() (no timeout) awaited a response from a connection
-        // whose server had died mid-request, forever. This is the fix,
-        // verified against the same failure shape: a connection accepted
-        // but never answered must actually fail, not hang.
+        // Confirmed live 2026-08-27: reqwest::Client::new() (no timeout)
+        // left a request awaiting a response from a connection whose
+        // server had died mid-request, forever -- observed alongside the
+        // desktop app freezing completely (even UI reload stopped
+        // responding), though this test only verifies the confirmed half
+        // of that: a connection accepted but never answered must actually
+        // fail, not hang. See build_http_client_with_timeout's doc comment.
         let (url, _listener) = spawn_mock_hang();
-        let client = build_http_client_with_timeout(std::time::Duration::from_millis(200));
+        let client = build_http_client_with_timeout(std::time::Duration::from_millis(200))
+            .expect("a plain timeout-only builder should never fail to build");
 
         // A plain #[test] has no ambient Tokio runtime -- tauri::async_
         // runtime::block_on relies on one already existing (set up by
@@ -603,7 +614,12 @@ pub(crate) mod tests {
         let started = std::time::Instant::now();
         let result = rt.block_on(async { client.get(&url).send().await });
 
-        assert!(result.is_err(), "a connection that never responds must time out, not hang");
+        // Specifically a timeout, not just any error -- an early connection
+        // failure would also satisfy a bare is_err() check and the elapsed-
+        // time bound below, without actually exercising what this test is
+        // for.
+        let err = result.expect_err("a connection that never responds must time out, not hang");
+        assert!(err.is_timeout(), "expected a timeout error, got: {err} ({err:?})");
         assert!(
             started.elapsed() < std::time::Duration::from_secs(5),
             "took {:?} -- the 200ms timeout did not actually bound the wait",
@@ -1225,7 +1241,7 @@ pub async fn sync_start(app: tauri::AppHandle) -> Result<(), String> {
     let vault_path = crate::settings::resolve_vault_path(&settings);
     std::fs::create_dir_all(&vault_path).map_err(|e| e.to_string())?;
 
-    let http = build_http_client();
+    let http = build_http_client()?;
     // Cheap string check first (isLoopbackUrl already screens out the
     // obvious 127.0.0.1 case in TS -- this covers a non-loopback hostname
     // that still happens to route back to this same machine); the
