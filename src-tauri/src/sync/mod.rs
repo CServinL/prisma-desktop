@@ -139,6 +139,10 @@ pub fn relative_md_path(vault_path: &Path, abs_path: &Path) -> Option<String> {
 
 // ── Shared context + HTTP helpers ─────────────────────────────────────────────
 
+// The production timeout -- see build_http_client()'s doc comment below for
+// why this exists at all.
+const HTTP_CLIENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Every production `SyncContext`/diff check must build its `reqwest::Client`
 /// through here, never a bare `reqwest::Client::new()` -- that has no
 /// request timeout at all by default, so a request whose TCP connection is
@@ -152,8 +156,6 @@ pub fn relative_md_path(vault_path: &Path, abs_path: &Path) -> Option<String> {
 /// incident, not a complete root-cause account of every symptom.)
 /// auth::sync_login had the same gap independently, and so did sync_diff
 /// below (caught in code review, not live -- but the same real gap).
-const HTTP_CLIENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-
 fn build_http_client() -> Result<reqwest::Client, String> {
     build_http_client_with_timeout(HTTP_CLIENT_TIMEOUT)
 }
