@@ -139,18 +139,19 @@ pub fn relative_md_path(vault_path: &Path, abs_path: &Path) -> Option<String> {
 
 // ── Shared context + HTTP helpers ─────────────────────────────────────────────
 
-/// The one place a `reqwest::Client` for talking to the prisma server gets
-/// built -- `reqwest::Client::new()` has no request timeout at all by
-/// default, so a request whose TCP connection is accepted but never
-/// answered (a pod dying mid-request during a rolling deploy is the
-/// concrete case that surfaced this, 2026-08-27) hangs the awaiting task
-/// forever: the request future simply never resolves, with nothing to make
-/// it fail so `pull.rs`'s run_pull_loop retry logic ever gets a turn.
-/// (Whether/how that alone explains the full app freeze observed
-/// alongside it -- including the UI's own reload -- wasn't established;
-/// treat this as the concrete, confirmed half of that incident, not a
-/// complete root-cause account of every symptom.) auth::sync_login had
-/// the same gap independently.
+/// Every production `SyncContext`/diff check must build its `reqwest::Client`
+/// through here, never a bare `reqwest::Client::new()` -- that has no
+/// request timeout at all by default, so a request whose TCP connection is
+/// accepted but never answered (a pod dying mid-request during a rolling
+/// deploy is the concrete case that surfaced this, 2026-08-27) hangs the
+/// awaiting task forever: the request future simply never resolves, with
+/// nothing to make it fail so `pull.rs`'s run_pull_loop retry logic ever
+/// gets a turn. (Whether/how that alone explains the full app freeze
+/// observed alongside it -- including the UI's own reload -- wasn't
+/// established; treat this as the concrete, confirmed half of that
+/// incident, not a complete root-cause account of every symptom.)
+/// auth::sync_login had the same gap independently, and so did sync_diff
+/// below (caught in code review, not live -- but the same real gap).
 const HTTP_CLIENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 fn build_http_client() -> Result<reqwest::Client, String> {
@@ -612,7 +613,14 @@ pub(crate) mod tests {
         // the resulting future later gets polled/awaited.
         let rt = tokio::runtime::Runtime::new().unwrap();
         let started = std::time::Instant::now();
-        let result = rt.block_on(async { client.get(&url).send().await });
+        // An outer bound independent of the mechanism under test -- if
+        // build_http_client_with_timeout's own .timeout() ever regresses
+        // (stops actually cutting the request off), this test must fail
+        // fast instead of hanging the whole CI run right along with it.
+        let outer = rt.block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(5), client.get(&url).send()).await
+        });
+        let result = outer.expect("build_http_client_with_timeout's own timeout did not fire at all -- the mechanism under test regressed");
 
         // Specifically a timeout, not just any error -- an early connection
         // failure would also satisfy a bare is_err() check and the elapsed-
@@ -1367,7 +1375,7 @@ pub async fn sync_diff(app: tauri::AppHandle) -> Result<SyncDiffInfo, String> {
 
     let token = crate::auth::session_for(&server_url).map(|s| s.token);
     let ctx = SyncContext {
-        http: reqwest::Client::new(),
+        http: build_http_client()?,
         server_url,
         vault_path: vault_path.clone(),
         client_id: "diff-check".into(),
